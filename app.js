@@ -505,6 +505,83 @@ app.post('/admin/sync-meta-leads', async (req, res) => {
     }
 });
 
+app.post('/admin/leads/:id/update', async (req, res) => {
+    const { id } = req.params;
+    const { status, region, memo, tmId, reservationAt } = req.body || {};
+    if (!status && region === undefined && !memo && tmId === undefined && reservationAt === undefined) {
+        return res.status(400).json({ error: 'no changes provided' });
+    }
+
+    try {
+        let currentStatus = null;
+        if (status) {
+            const [rows] = await pool.query('SELECT 상태 FROM tm_leads WHERE id = ?', [id]);
+            currentStatus = rows[0]?.상태 ?? null;
+        }
+        const statusChanged = status && status !== currentStatus;
+
+        const updates = [];
+        const params = [];
+
+        if (statusChanged) {
+            updates.push('상태 = ?');
+            params.push(status);
+            updates.push('콜_날짜시간 = NOW()');
+            updates.push('예약_내원일시 = ?');
+            params.push(reservationAt || null);
+
+            const callStatuses = ['부재중', '리콜대기', '예약'];
+            const isMissed = status === '부재중';
+            const isNoShow = status === '예약부도';
+            const incCall = callStatuses.includes(status) || isNoShow;
+            updates.push('콜횟수 = COALESCE(콜횟수, 0) + ?');
+            params.push(incCall ? 1 : 0);
+            updates.push('부재중_횟수 = COALESCE(부재중_횟수, 0) + ?');
+            params.push(isMissed ? 1 : 0);
+            updates.push('예약부도_횟수 = COALESCE(예약부도_횟수, 0) + ?');
+            params.push(isNoShow ? 1 : 0);
+        } else if (reservationAt !== undefined) {
+            updates.push('예약_내원일시 = ?');
+            params.push(reservationAt || null);
+        }
+
+        if (region !== undefined) {
+            updates.push('거주지 = ?');
+            params.push(region || null);
+        }
+
+        if (tmId !== undefined) {
+            updates.push('tm = ?');
+            params.push(tmId || null);
+        }
+
+        if (updates.length === 0) {
+            return res.json({ ok: true, skipped: true });
+        }
+
+        const [result] = await pool.query(
+            `UPDATE tm_leads SET ${updates.join(', ')} WHERE id = ?`,
+            [...params, id]
+        );
+
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ error: 'Lead not found' });
+        }
+
+        if (memo && String(memo).trim().length > 0) {
+            await pool.query(
+                'INSERT INTO tm_memos (memo_content, target_phone, tm_id, tm_lead_id) VALUES (?, ?, ?, ?)',
+                [memo, req.body.phone || '', tmId || 0, id]
+            );
+        }
+
+        res.json({ ok: true });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'DB query failed' });
+    }
+});
+
 app.get('/admin/event-rules', async (req, res) => {
     try {
         const [rows] = await pool.query(
