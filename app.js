@@ -302,13 +302,17 @@ app.post('/tm/assign', async (req, res) => {
         const columns = await describeTable('tm_leads');
         const idCol = pickColumn(columns, ['id', 'lead_id', 'tm_lead_id']);
         const assignCol = pickColumn(columns, ['tm_id', 'tmid', 'assigned_tm_id', 'assigned_tm', 'tm']);
+        const assignedAtCol = pickColumn(columns, ['배정날짜', 'assigned_at', 'assigned_date', 'tm_assigned_at']);
 
         if (!idCol || !assignCol) {
             return res.status(500).json({ error: 'tm_leads columns not found' });
         }
 
+        const setSql = assignedAtCol
+            ? `${assignCol} = ?, ${assignedAtCol} = NOW()`
+            : `${assignCol} = ?`;
         const [result] = await pool.query(
-            `UPDATE tm_leads SET ${assignCol} = ? WHERE ${idCol} = ? AND (${assignCol} IS NULL OR ${assignCol} = 0 OR ${assignCol} = '')`,
+            `UPDATE tm_leads SET ${setSql} WHERE ${idCol} = ? AND (${assignCol} IS NULL OR ${assignCol} = 0 OR ${assignCol} = '')`,
             [tmId, leadId]
         );
 
@@ -514,9 +518,14 @@ app.post('/admin/leads/:id/update', async (req, res) => {
 
     try {
         let currentStatus = null;
+        let currentTm = null;
         if (status) {
             const [rows] = await pool.query('SELECT 상태 FROM tm_leads WHERE id = ?', [id]);
             currentStatus = rows[0]?.상태 ?? null;
+        }
+        if (tmId !== undefined) {
+            const [rows] = await pool.query('SELECT tm FROM tm_leads WHERE id = ?', [id]);
+            currentTm = rows[0]?.tm ?? null;
         }
         const statusChanged = status && status !== currentStatus;
 
@@ -553,6 +562,9 @@ app.post('/admin/leads/:id/update', async (req, res) => {
         if (tmId !== undefined) {
             updates.push('tm = ?');
             params.push(tmId || null);
+            if (tmId && String(tmId) !== String(currentTm || '')) {
+                updates.push('배정날짜 = NOW()');
+            }
         }
 
         if (updates.length === 0) {
