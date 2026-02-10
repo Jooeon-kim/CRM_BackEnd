@@ -68,7 +68,7 @@ const describeTable = async (table) => {
 
 app.get('/dbdata', async (req, res) => {
     try {
-        const { tm, status, callMin, missMin, region, memo } = req.query || {};
+        const { tm, status, callMin, missMin, region, memo, assignedToday } = req.query || {};
         const columns = await describeTable('tm_leads');
         const map = {
             tm: pickColumn(columns, ['tm', 'tm_id', 'assigned_tm_id', 'assigned_tm']),
@@ -76,6 +76,7 @@ app.get('/dbdata', async (req, res) => {
             callCount: pickColumn(columns, ['콜횟수', 'call_count']),
             missCount: pickColumn(columns, ['부재중_횟수', 'miss_count']),
             region: pickColumn(columns, ['거주지', 'region']),
+            assignedDate: pickColumn(columns, ['배정날짜', 'assigned_at', 'assigned_date', 'tm_assigned_at']),
         };
 
         const where = [];
@@ -110,6 +111,9 @@ app.get('/dbdata', async (req, res) => {
         if (memo) {
             where.push('m.memo_content LIKE ?');
             params.push(`%${memo}%`);
+        }
+        if (assignedToday && map.assignedDate) {
+            where.push(`DATE(l.\`${map.assignedDate}\`) = CURDATE()`);
         }
 
         const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
