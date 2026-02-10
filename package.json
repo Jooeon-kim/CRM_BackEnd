@@ -1,0 +1,26 @@
+{
+  "name": "CRM_BackEnd",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "dev": "nodemon app.js",
+    "start": "node app.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "dotenv": "^17.2.4",
+    "exceljs": "^4.4.0",
+    "express": "^5.2.1",
+    "express-session": "^1.18.2",
+    "mysql2": "^3.16.3"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.11"
+  }
+}
