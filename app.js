@@ -468,11 +468,17 @@ app.post('/admin/sync-meta-leads', async (req, res) => {
             `;
             let inserted = 0;
             for (const row of metaRows) {
-                const phoneClean = String(row.phone_number || '')
-                    .replace(/-/g, '')
-                    .replace(/\s+/g, '');
-                const phone =
-                    phoneClean.startsWith('+8210') ? `010${phoneClean.slice(5)}` : phoneClean;
+                const rawPhone = String(row.phone_number || '');
+                const digitsOnly = rawPhone.replace(/\D/g, '');
+                let phone = '';
+                if (digitsOnly) {
+                    phone = digitsOnly.startsWith('82')
+                        ? `0${digitsOnly.slice(2)}`
+                        : digitsOnly;
+                }
+                if (phone.length > 30) {
+                    phone = phone.slice(0, 30);
+                }
                 const eventName = pickEvent(row.ad_name);
                 const [result] = await conn.query(insertSql, [
                     row.id,
