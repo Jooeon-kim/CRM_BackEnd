@@ -498,6 +498,49 @@ app.post('/admin/sync-meta-leads', async (req, res) => {
     }
 });
 
+app.get('/admin/event-rules', async (req, res) => {
+    try {
+        const [rows] = await pool.query(
+            'SELECT id, name, keywords, created_at FROM event_rules ORDER BY id DESC'
+        );
+        res.json(rows);
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Fetch failed' });
+    }
+});
+
+app.post('/admin/event-rules', async (req, res) => {
+    const { name, keywords } = req.body || {};
+    if (!name || !keywords) {
+        return res.status(400).json({ error: 'name and keywords are required' });
+    }
+    try {
+        const [result] = await pool.query(
+            'INSERT INTO event_rules (name, keywords) VALUES (?, ?)',
+            [name, keywords]
+        );
+        res.json({ ok: true, id: result.insertId });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Create failed' });
+    }
+});
+
+app.delete('/admin/event-rules/:id', async (req, res) => {
+    const { id } = req.params;
+    try {
+        const [result] = await pool.query('DELETE FROM event_rules WHERE id = ?', [id]);
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ error: 'Rule not found' });
+        }
+        res.json({ ok: true });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Delete failed' });
+    }
+});
+
 app.get('/tm/leads/export', async (req, res) => {
     try {
         const columns = await describeTable('tm_leads');
