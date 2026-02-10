@@ -1,9 +1,27 @@
-ï»¿const express = require('express');
+const express = require('express');
 const session = require('express-session');
+const cors = require('cors');
 require('dotenv').config();
 const pool = require('./db');
 
 const app = express();
+const allowedOrigins = (process.env.CORS_ORIGIN || '')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+
+app.use(cors({
+    origin: (origin, callback) => {
+        if (!origin) return callback(null, true);
+        if (allowedOrigins.length === 0) return callback(null, true);
+        if (allowedOrigins.includes(origin)) return callback(null, true);
+        return callback(new Error('Not allowed by CORS'));
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+}));
+app.options('*', cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 app.use(session({
@@ -13,8 +31,8 @@ app.use(session({
     saveUninitialized: false,
     cookie: {
         httpOnly: true,
-        sameSite: 'lax',
-        secure: process.env.NODE_ENV === 'production',
+        sameSite: process.env.COOKIE_SAMESITE || (process.env.CORS_ORIGIN ? 'none' : 'lax'),
+        secure: process.env.NODE_ENV === 'production' || process.env.COOKIE_SAMESITE === 'none',
         maxAge: 1000 * 60 * 60
     }
 }));
@@ -24,13 +42,13 @@ const ExcelJS = require('exceljs');
 
 
 app.get('/', (req, res) => {
-    res.send('ì„œë²„ ì‹¤í–‰ì¤‘');
+    res.send('¼­¹ö ½ÇÇàÁß');
 });
 
 app.use('/auth', authRouter);
 
 app.listen(3000, () => {
-    console.log('ì„œë²„ê°€ 3000ë²ˆ í¬íŠ¸ì—ì„œ ì‹¤í–‰ì¤‘ìž…ë‹ˆë‹¤.');
+    console.log('¼­¹ö°¡ 3000¹ø Æ÷Æ®¿¡¼­ ½ÇÇàÁßÀÔ´Ï´Ù.');
 });
 
 // NOTE: removed unused /info endpoint (list was undefined)
@@ -46,25 +64,25 @@ app.get('/dbdata', async (req, res) => {
             params.push(tm);
         }
         if (status && status !== 'all') {
-            where.push('l.`ìƒíƒœ` LIKE ?');
+            where.push('l.`»óÅÂ` LIKE ?');
             params.push(`%${status}%`);
         }
         if (callMin !== undefined && callMin !== '') {
             const min = Number(callMin);
             if (!Number.isNaN(min)) {
-                where.push('COALESCE(l.`ì½œíšŸìˆ˜`, 0) >= ?');
+                where.push('COALESCE(l.`ÄÝÈ½¼ö`, 0) >= ?');
                 params.push(min);
             }
         }
         if (missMin !== undefined && missMin !== '') {
             const min = Number(missMin);
             if (!Number.isNaN(min)) {
-                where.push('COALESCE(l.`ë¶€ìž¬ì¤‘_íšŸìˆ˜`, 0) >= ?');
+                where.push('COALESCE(l.`ºÎÀçÁß_È½¼ö`, 0) >= ?');
                 params.push(min);
             }
         }
         if (region) {
-            where.push('l.`ê±°ì£¼ì§€` LIKE ?');
+            where.push('l.`°ÅÁÖÁö` LIKE ?');
             params.push(`%${region}%`);
         }
         if (memo) {
@@ -77,9 +95,9 @@ app.get('/dbdata', async (req, res) => {
         const [rows] = await pool.query(`
             SELECT 
                 l.*,
-                m.memo_time AS ìµœê·¼ë©”ëª¨ì‹œê°„,
-                m.memo_content AS ìµœê·¼ë©”ëª¨ë‚´ìš©,
-                m.tm_id AS ìµœê·¼ë©”ëª¨ìž‘ì„±ìž
+                m.memo_time AS ÃÖ±Ù¸Þ¸ð½Ã°£,
+                m.memo_content AS ÃÖ±Ù¸Þ¸ð³»¿ë,
+                m.tm_id AS ÃÖ±Ù¸Þ¸ðÀÛ¼ºÀÚ
             FROM tm_leads l
             LEFT JOIN (
                 SELECT mm.*
@@ -172,11 +190,11 @@ app.get('/tm/leads', async (req, res) => {
         const columns = await describeTable('tm_leads');
         const map = {
             id: pickColumn(columns, ['id', 'lead_id', 'tm_lead_id']),
-            name: pickColumn(columns, ['name', 'customer_name', 'client_name', 'user_name', 'ì´ë¦„']),
-            phone: pickColumn(columns, ['phone', 'phone_number', 'tel', 'mobile', 'ì—°ë½ì²˜']),
-            availableTime: pickColumn(columns, ['available_time', 'availabletime', 'call_time', 'time_range', 'available_hour', 'ìƒë‹´ê°€ëŠ¥ì‹œê°„']),
-            event: pickColumn(columns, ['event', 'event_name', 'campaign', 'source', 'ì´ë²¤íŠ¸']),
-            inboundDate: pickColumn(columns, ['inbound_date', 'in_date', 'created_at', 'createdat', 'reg_date', 'created', 'ì¸ìž…ë‚ ì§œ']),
+            name: pickColumn(columns, ['name', 'customer_name', 'client_name', 'user_name', 'ÀÌ¸§']),
+            phone: pickColumn(columns, ['phone', 'phone_number', 'tel', 'mobile', '¿¬¶ôÃ³']),
+            availableTime: pickColumn(columns, ['available_time', 'availabletime', 'call_time', 'time_range', 'available_hour', '»ó´ã°¡´É½Ã°£']),
+            event: pickColumn(columns, ['event', 'event_name', 'campaign', 'source', 'ÀÌº¥Æ®']),
+            inboundDate: pickColumn(columns, ['inbound_date', 'in_date', 'created_at', 'createdat', 'reg_date', 'created', 'ÀÎÀÔ³¯Â¥']),
             assignedTm: pickColumn(columns, ['tm_id', 'tmid', 'assigned_tm_id', 'assigned_tm', 'tm']),
         };
 
@@ -321,22 +339,22 @@ app.post('/tm/leads/:id/update', async (req, res) => {
         return res.status(400).json({ error: 'status and tmId are required' });
     }
 
-    const callStatuses = ['ë¶€ìž¬ì¤‘', 'ë¦¬ì½œëŒ€ê¸°', 'ì˜ˆì•½'];
-    const isMissed = status === 'ë¶€ìž¬ì¤‘';
-    const isNoShow = status === 'ì˜ˆì•½ë¶€ë„';
+    const callStatuses = ['ºÎÀçÁß', '¸®ÄÝ´ë±â', '¿¹¾à'];
+    const isMissed = status === 'ºÎÀçÁß';
+    const isNoShow = status === '¿¹¾àºÎµµ';
     const incCall = callStatuses.includes(status) || isNoShow;
 
     try {
         const [result] = await pool.query(
             `UPDATE tm_leads
              SET
-                ìƒíƒœ = ?,
-                ê±°ì£¼ì§€ = ?,
-                ì½œ_ë‚ ì§œì‹œê°„ = NOW(),
-                ì˜ˆì•½_ë‚´ì›ì¼ì‹œ = ?,
-                ì½œíšŸìˆ˜ = COALESCE(ì½œíšŸìˆ˜, 0) + ?,
-                ë¶€ìž¬ì¤‘_íšŸìˆ˜ = COALESCE(ë¶€ìž¬ì¤‘_íšŸìˆ˜, 0) + ?,
-                ì˜ˆì•½ë¶€ë„_íšŸìˆ˜ = COALESCE(ì˜ˆì•½ë¶€ë„_íšŸìˆ˜, 0) + ?
+                »óÅÂ = ?,
+                °ÅÁÖÁö = ?,
+                ÄÝ_³¯Â¥½Ã°£ = NOW(),
+                ¿¹¾à_³»¿øÀÏ½Ã = ?,
+                ÄÝÈ½¼ö = COALESCE(ÄÝÈ½¼ö, 0) + ?,
+                ºÎÀçÁß_È½¼ö = COALESCE(ºÎÀçÁß_È½¼ö, 0) + ?,
+                ¿¹¾àºÎµµ_È½¼ö = COALESCE(¿¹¾àºÎµµ_È½¼ö, 0) + ?
              WHERE id = ?`,
             [
                 status,
@@ -383,11 +401,11 @@ app.post('/admin/sync-meta-leads', async (req, res) => {
         const [result] = await pool.query(`
             INSERT INTO tm_leads (
                 meta_id,
-                ì¸ìž…ë‚ ì§œ,
-                ì´ë¦„,
-                ì—°ë½ì²˜,
-                ìƒë‹´ê°€ëŠ¥ì‹œê°„,
-                ì´ë²¤íŠ¸
+                ÀÎÀÔ³¯Â¥,
+                ÀÌ¸§,
+                ¿¬¶ôÃ³,
+                »ó´ã°¡´É½Ã°£,
+                ÀÌº¥Æ®
             )
             SELECT
                 m.id,
@@ -396,14 +414,14 @@ app.post('/admin/sync-meta-leads', async (req, res) => {
                 CASE
                     WHEN phone_clean LIKE '+8210%' THEN CONCAT('010', SUBSTRING(phone_clean, 6))
                     ELSE phone_clean
-                END AS ì—°ë½ì²˜,
-                m.ìƒë‹´_í¬ë§_ì‹œê°„ì„_ì„ íƒí•´ì£¼ì„¸ìš”,
+                END AS ¿¬¶ôÃ³,
+                m.»ó´ã_Èñ¸Á_½Ã°£À»_¼±ÅÃÇØÁÖ¼¼¿ä,
                 CASE
-                    WHEN m.ad_name LIKE '%ì˜¬íƒ€ì´íŠ¸%' THEN 'ì˜¬íƒ€ì´íŠ¸'
-                    WHEN m.ad_name LIKE '%í‹°íƒ€ëŠ„%' THEN 'í‹°íƒ€ëŠ„'
-                    WHEN m.ad_name LIKE '%ë¦¬íˆ¬ì˜¤%' THEN 'ë¦¬íˆ¬ì˜¤'
+                    WHEN m.ad_name LIKE '%¿ÃÅ¸ÀÌÆ®%' THEN '¿ÃÅ¸ÀÌÆ®'
+                    WHEN m.ad_name LIKE '%Æ¼Å¸´½%' THEN 'Æ¼Å¸´½'
+                    WHEN m.ad_name LIKE '%¸®Åõ¿À%' THEN '¸®Åõ¿À'
                     ELSE NULL
-                END AS ì´ë²¤íŠ¸
+                END AS ÀÌº¥Æ®
             FROM (
                 SELECT
                     id,
@@ -411,7 +429,7 @@ app.post('/admin/sync-meta-leads', async (req, res) => {
                     full_name,
                     ad_name,
                     REPLACE(REPLACE(IFNULL(phone_number, ''), '-', ''), ' ', '') AS phone_clean,
-                    ìƒë‹´_í¬ë§_ì‹œê°„ì„_ì„ íƒí•´ì£¼ì„¸ìš”
+                    »ó´ã_Èñ¸Á_½Ã°£À»_¼±ÅÃÇØÁÖ¼¼¿ä
                 FROM meta_leads
             ) m
             WHERE NOT EXISTS (
@@ -431,11 +449,11 @@ app.get('/tm/leads/export', async (req, res) => {
         const columns = await describeTable('tm_leads');
         const map = {
             id: pickColumn(columns, ['id', 'lead_id', 'tm_lead_id']),
-            name: pickColumn(columns, ['name', 'customer_name', 'client_name', 'user_name', 'ì´ë¦„']),
-            phone: pickColumn(columns, ['phone', 'phone_number', 'tel', 'mobile', 'ì—°ë½ì²˜']),
-            availableTime: pickColumn(columns, ['available_time', 'availabletime', 'call_time', 'time_range', 'available_hour', 'ìƒë‹´ê°€ëŠ¥ì‹œê°„']),
-            event: pickColumn(columns, ['event', 'event_name', 'campaign', 'source', 'ì´ë²¤íŠ¸']),
-            inboundDate: pickColumn(columns, ['inbound_date', 'in_date', 'created_at', 'createdat', 'reg_date', 'created', 'ì¸ìž…ë‚ ì§œ']),
+            name: pickColumn(columns, ['name', 'customer_name', 'client_name', 'user_name', 'ÀÌ¸§']),
+            phone: pickColumn(columns, ['phone', 'phone_number', 'tel', 'mobile', '¿¬¶ôÃ³']),
+            availableTime: pickColumn(columns, ['available_time', 'availabletime', 'call_time', 'time_range', 'available_hour', '»ó´ã°¡´É½Ã°£']),
+            event: pickColumn(columns, ['event', 'event_name', 'campaign', 'source', 'ÀÌº¥Æ®']),
+            inboundDate: pickColumn(columns, ['inbound_date', 'in_date', 'created_at', 'createdat', 'reg_date', 'created', 'ÀÎÀÔ³¯Â¥']),
             assignedTm: pickColumn(columns, ['tm_id', 'tmid', 'assigned_tm_id', 'assigned_tm', 'tm']),
         };
 
@@ -459,13 +477,13 @@ app.get('/tm/leads/export', async (req, res) => {
         }
 
         const workbook = new ExcelJS.Workbook();
-        const sheet = workbook.addWorksheet('TMë°°ì •');
+        const sheet = workbook.addWorksheet('TM¹èÁ¤');
         sheet.columns = [
-            { header: 'ì¸ìž…ì‹œê°„', key: 'inboundDate', width: 20 },
-            { header: 'ì´ë¦„', key: 'name', width: 18 },
-            { header: 'ì—°ë½ì²˜', key: 'phone', width: 18 },
-            { header: 'ìƒë‹´ê°€ëŠ¥ì‹œê°„', key: 'availableTime', width: 20 },
-            { header: 'ì´ë²¤íŠ¸', key: 'event', width: 16 },
+            { header: 'ÀÎÀÔ½Ã°£', key: 'inboundDate', width: 20 },
+            { header: 'ÀÌ¸§', key: 'name', width: 18 },
+            { header: '¿¬¶ôÃ³', key: 'phone', width: 18 },
+            { header: '»ó´ã°¡´É½Ã°£', key: 'availableTime', width: 20 },
+            { header: 'ÀÌº¥Æ®', key: 'event', width: 16 },
         ];
 
         leads.forEach((lead) => {
@@ -499,25 +517,25 @@ app.get('/dbdata/export', async (req, res) => {
             params.push(tm);
         }
         if (status && status !== 'all') {
-            where.push('l.`ìƒíƒœ` LIKE ?');
+            where.push('l.`»óÅÂ` LIKE ?');
             params.push(`%${status}%`);
         }
         if (callMin !== undefined && callMin !== '') {
             const min = Number(callMin);
             if (!Number.isNaN(min)) {
-                where.push('COALESCE(l.`ì½œíšŸìˆ˜`, 0) >= ?');
+                where.push('COALESCE(l.`ÄÝÈ½¼ö`, 0) >= ?');
                 params.push(min);
             }
         }
         if (missMin !== undefined && missMin !== '') {
             const min = Number(missMin);
             if (!Number.isNaN(min)) {
-                where.push('COALESCE(l.`ë¶€ìž¬ì¤‘_íšŸìˆ˜`, 0) >= ?');
+                where.push('COALESCE(l.`ºÎÀçÁß_È½¼ö`, 0) >= ?');
                 params.push(min);
             }
         }
         if (region) {
-            where.push('l.`ê±°ì£¼ì§€` LIKE ?');
+            where.push('l.`°ÅÁÖÁö` LIKE ?');
             params.push(`%${region}%`);
         }
         if (memo) {
@@ -531,9 +549,9 @@ app.get('/dbdata/export', async (req, res) => {
             SELECT 
                 l.*,
                 t.name AS tm_name,
-                m.memo_time AS ìµœê·¼ë©”ëª¨ì‹œê°„,
-                m.memo_content AS ìµœê·¼ë©”ëª¨ë‚´ìš©,
-                m.tm_id AS ìµœê·¼ë©”ëª¨ìž‘ì„±ìž
+                m.memo_time AS ÃÖ±Ù¸Þ¸ð½Ã°£,
+                m.memo_content AS ÃÖ±Ù¸Þ¸ð³»¿ë,
+                m.tm_id AS ÃÖ±Ù¸Þ¸ðÀÛ¼ºÀÚ
             FROM tm_leads l
             LEFT JOIN tm t ON t.id = l.tm
             LEFT JOIN (
@@ -553,27 +571,27 @@ app.get('/dbdata/export', async (req, res) => {
         `, params);
 
         const workbook = new ExcelJS.Workbook();
-        const sheet = workbook.addWorksheet('DBëª©ë¡');
+        const sheet = workbook.addWorksheet('DB¸ñ·Ï');
         const visibleColumns = [
-            'ì¸ìž…ë‚ ì§œ',
-            'ì´ë¦„',
-            'ì—°ë½ì²˜',
-            'ì´ë²¤íŠ¸',
+            'ÀÎÀÔ³¯Â¥',
+            'ÀÌ¸§',
+            '¿¬¶ôÃ³',
+            'ÀÌº¥Æ®',
             'tm',
-            'ìƒíƒœ',
-            'ìµœê·¼ë©”ëª¨ë‚´ìš©',
-            'ì½œ_ë‚ ì§œì‹œê°„',
-            'ì˜ˆì•½_ë‚´ì›ì¼ì‹œ',
-            'ê±°ì£¼ì§€',
-            'ìµœê·¼ë©”ëª¨ì‹œê°„',
-            'ì½œíšŸìˆ˜',
+            '»óÅÂ',
+            'ÃÖ±Ù¸Þ¸ð³»¿ë',
+            'ÄÝ_³¯Â¥½Ã°£',
+            '¿¹¾à_³»¿øÀÏ½Ã',
+            '°ÅÁÖÁö',
+            'ÃÖ±Ù¸Þ¸ð½Ã°£',
+            'ÄÝÈ½¼ö',
         ];
         sheet.columns = visibleColumns.map((key) => ({ header: key, key, width: 18 }));
 
         rows.forEach((row) => {
             const formatted = {};
             visibleColumns.forEach((key) => {
-                if (key === 'ì—°ë½ì²˜') {
+                if (key === '¿¬¶ôÃ³') {
                     formatted[key] = formatPhone(row[key]);
                     return;
                 }
@@ -581,7 +599,7 @@ app.get('/dbdata/export', async (req, res) => {
                     formatted[key] = row.tm_name || row[key] || '';
                     return;
                 }
-                if (key === 'ì¸ìž…ë‚ ì§œ' || key === 'ì½œ_ë‚ ì§œì‹œê°„' || key === 'ì˜ˆì•½_ë‚´ì›ì¼ì‹œ' || key === 'ìµœê·¼ë©”ëª¨ì‹œê°„') {
+                if (key === 'ÀÎÀÔ³¯Â¥' || key === 'ÄÝ_³¯Â¥½Ã°£' || key === '¿¹¾à_³»¿øÀÏ½Ã' || key === 'ÃÖ±Ù¸Þ¸ð½Ã°£') {
                     formatted[key] = row[key] ? formatDateTime(row[key]) : '';
                     return;
                 }
@@ -599,3 +617,5 @@ app.get('/dbdata/export', async (req, res) => {
         res.status(500).json({ error: 'Export failed' });
     }
 });
+
+
