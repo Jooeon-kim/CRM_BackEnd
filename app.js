@@ -21,7 +21,6 @@ app.use(cors({
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
 }));
-app.options('*', cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 app.use(session({
@@ -617,5 +616,6 @@ app.get('/dbdata/export', async (req, res) => {
         res.status(500).json({ error: 'Export failed' });
     }
 });
+
 
 
