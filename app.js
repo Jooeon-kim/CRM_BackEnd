@@ -406,46 +406,92 @@ app.post('/admin/sync-meta-leads', async (req, res) => {
             await pool.query('ALTER TABLE tm_leads ADD COLUMN meta_id varchar(50) NULL');
         }
 
-        const [result] = await pool.query(`
-            INSERT INTO tm_leads (
-                meta_id,
-                인입날짜,
-                이름,
-                연락처,
-                상담가능시간,
-                이벤트
-            )
+        const [ruleRows] = await pool.query(`
+            SELECT id, name, keywords
+            FROM event_rules
+            ORDER BY LENGTH(keywords) DESC, id ASC
+        `);
+        const rules = (ruleRows || []).map((row) => {
+            const keywords = String(row.keywords || '')
+                .split(',')
+                .map((part) => part.trim())
+                .filter(Boolean)
+                .map((part) => part.replace(/\s+/g, ''));
+            return {
+                id: row.id,
+                name: row.name,
+                keywords,
+            };
+        });
+
+        const [metaRows] = await pool.query(`
             SELECT
-                m.id,
-                m.created_time,
-                m.full_name,
-                CASE
-                    WHEN phone_clean LIKE '+8210%' THEN CONCAT('010', SUBSTRING(phone_clean, 6))
-                    ELSE phone_clean
-                END AS 연락처,
-                m.상담_희망_시간을_선택해주세요,
-                CASE
-                    WHEN m.ad_name LIKE '%올타이트%' THEN '올타이트'
-                    WHEN m.ad_name LIKE '%티타늄%' THEN '티타늄'
-                    WHEN m.ad_name LIKE '%리투오%' THEN '리투오'
-                    ELSE NULL
-                END AS 이벤트
-            FROM (
-                SELECT
-                    id,
-                    created_time,
-                    full_name,
-                    ad_name,
-                    REPLACE(REPLACE(IFNULL(phone_number, ''), '-', ''), ' ', '') AS phone_clean,
-                    상담_희망_시간을_선택해주세요
-                FROM meta_leads
-            ) m
+                id,
+                created_time,
+                full_name,
+                ad_name,
+                phone_number,
+                상담_희망_시간을_선택해주세요
+            FROM meta_leads m
             WHERE NOT EXISTS (
                 SELECT 1 FROM tm_leads t WHERE t.meta_id = m.id
             )
         `);
 
-        res.json({ inserted: result.affectedRows });
+        if (!metaRows.length) {
+            return res.json({ inserted: 0 });
+        }
+
+        const normalize = (value) => String(value || '').replace(/\s+/g, '');
+        const pickEvent = (adName) => {
+            const target = normalize(adName);
+            for (const rule of rules) {
+                if (!rule.keywords.length) continue;
+                const ok = rule.keywords.every((kw) => target.includes(kw));
+                if (ok) return rule.name;
+            }
+            return null;
+        };
+
+        const conn = await pool.getConnection();
+        try {
+            await conn.beginTransaction();
+            const insertSql = `
+                INSERT INTO tm_leads (
+                    meta_id,
+                    인입날짜,
+                    이름,
+                    연락처,
+                    상담가능시간,
+                    이벤트
+                ) VALUES (?, ?, ?, ?, ?, ?)
+            `;
+            let inserted = 0;
+            for (const row of metaRows) {
+                const phoneClean = String(row.phone_number || '')
+                    .replace(/-/g, '')
+                    .replace(/\s+/g, '');
+                const phone =
+                    phoneClean.startsWith('+8210') ? `010${phoneClean.slice(5)}` : phoneClean;
+                const eventName = pickEvent(row.ad_name);
+                const [result] = await conn.query(insertSql, [
+                    row.id,
+                    row.created_time || null,
+                    row.full_name || null,
+                    phone || null,
+                    row.상담_희망_시간을_선택해주세요 || null,
+                    eventName,
+                ]);
+                inserted += result.affectedRows || 0;
+            }
+            await conn.commit();
+            res.json({ inserted });
+        } catch (innerErr) {
+            await conn.rollback();
+            throw innerErr;
+        } finally {
+            conn.release();
+        }
     } catch (err) {
         console.error(err);
         res.status(500).json({ error: 'Sync failed' });
