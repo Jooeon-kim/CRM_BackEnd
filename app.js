@@ -430,6 +430,7 @@ app.post('/admin/sync-meta-leads', async (req, res) => {
                 created_time,
                 full_name,
                 ad_name,
+                adset_name,
                 phone_number,
                 상담_희망_시간을_선택해주세요
             FROM meta_leads m
@@ -443,8 +444,8 @@ app.post('/admin/sync-meta-leads', async (req, res) => {
         }
 
         const normalize = (value) => String(value || '').replace(/\s+/g, '');
-        const pickEvent = (adName) => {
-            const target = normalize(adName);
+        const pickEvent = (adsetName, adName) => {
+            const target = normalize(adsetName || adName);
             for (const rule of rules) {
                 if (!rule.keywords.length) continue;
                 const ok = rule.keywords.every((kw) => target.includes(kw));
@@ -479,7 +480,7 @@ app.post('/admin/sync-meta-leads', async (req, res) => {
                 if (phone.length > 30) {
                     phone = phone.slice(0, 30);
                 }
-                const eventName = pickEvent(row.ad_name);
+                const eventName = pickEvent(row.adset_name, row.ad_name);
                 const [result] = await conn.query(insertSql, [
                     row.id,
                     row.created_time || null,
