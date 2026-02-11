@@ -197,6 +197,48 @@ const formatPhone = (value) => {
     return String(value);
 };
 
+const REPORT_METRIC_TYPES = new Set(['MISSED', 'RESERVED', 'VISIT_TODAY', 'VISIT_NEXTDAY']);
+
+const toDateKey = (value) => {
+    if (!value) return '';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return '';
+    const yyyy = date.getFullYear();
+    const mm = String(date.getMonth() + 1).padStart(2, '0');
+    const dd = String(date.getDate()).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}`;
+};
+
+const normalizeReportDate = (value) => {
+    if (!value) return toDateKey(new Date());
+    const str = String(value).trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(str)) return null;
+    const date = new Date(`${str}T00:00:00`);
+    if (Number.isNaN(date.getTime())) return null;
+    return toDateKey(date);
+};
+
+const nextDateKey = (dateKey) => {
+    const date = new Date(`${dateKey}T00:00:00`);
+    date.setDate(date.getDate() + 1);
+    return toDateKey(date);
+};
+
+const latestMemoJoinSql = `
+    LEFT JOIN (
+        SELECT mm.*
+        FROM tm_memos mm
+        INNER JOIN (
+            SELECT tm_lead_id, MAX(memo_time) AS max_time
+            FROM tm_memos
+            WHERE tm_lead_id IS NOT NULL
+            GROUP BY tm_lead_id
+        ) latest
+        ON latest.tm_lead_id = mm.tm_lead_id AND latest.max_time = mm.memo_time
+    ) m
+    ON m.tm_lead_id = l.id
+`;
+
 app.get('/tm/leads', async (req, res) => {
     try {
         const columns = await describeTable('tm_leads');
@@ -398,6 +440,229 @@ app.post('/tm/leads/:id/update', async (req, res) => {
     } catch (err) {
         console.error(err);
         res.status(500).json({ error: 'DB query failed' });
+    }
+});
+
+app.post('/tm/reports/close', async (req, res) => {
+    const { tmId, reportDate } = req.body || {};
+    const sessionTmId = req.session?.user?.id;
+    const targetTmId = tmId || sessionTmId;
+    const targetDate = normalizeReportDate(reportDate);
+
+    if (!targetTmId) {
+        return res.status(400).json({ error: 'tmId is required' });
+    }
+    if (!targetDate) {
+        return res.status(400).json({ error: 'reportDate must be YYYY-MM-DD' });
+    }
+
+    const normalizedTmId = String(targetTmId);
+    const nextDay = nextDateKey(targetDate);
+
+    const conn = await pool.getConnection();
+    try {
+        await conn.beginTransaction();
+
+        const [callRows] = await conn.query(
+            `
+            SELECT
+                l.id,
+                l.\`이름\` AS name,
+                l.\`연락처\` AS phone,
+                l.\`상태\` AS status,
+                l.\`예약_내원일시\` AS reservation_at,
+                m.memo_content AS latest_memo
+            FROM tm_leads l
+            ${latestMemoJoinSql}
+            WHERE l.tm = ?
+              AND DATE(l.\`콜_날짜시간\`) = ?
+            ORDER BY l.id DESC
+            `,
+            [normalizedTmId, targetDate]
+        );
+
+        const statusEq = (row, value) => String(row.status || '').trim() === value;
+        const missed = callRows.filter((row) => statusEq(row, '부재중'));
+        const reserved = callRows.filter((row) => statusEq(row, '예약'));
+        const visitToday = reserved.filter((row) => toDateKey(row.reservation_at) === targetDate);
+        const visitNextday = reserved.filter((row) => toDateKey(row.reservation_at) === nextDay);
+
+        await conn.query(
+            `
+            INSERT INTO tm_daily_report (
+                tm_id,
+                report_date,
+                total_call_count,
+                missed_count,
+                reserved_count,
+                visit_today_count,
+                visit_nextday_count,
+                submitted_at,
+                created_at,
+                updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), NOW())
+            ON DUPLICATE KEY UPDATE
+                total_call_count = VALUES(total_call_count),
+                missed_count = VALUES(missed_count),
+                reserved_count = VALUES(reserved_count),
+                visit_today_count = VALUES(visit_today_count),
+                visit_nextday_count = VALUES(visit_nextday_count),
+                submitted_at = NOW(),
+                updated_at = NOW()
+            `,
+            [
+                normalizedTmId,
+                targetDate,
+                callRows.length,
+                missed.length,
+                reserved.length,
+                visitToday.length,
+                visitNextday.length
+            ]
+        );
+
+        const [reportRows] = await conn.query(
+            'SELECT id FROM tm_daily_report WHERE tm_id = ? AND report_date = ? LIMIT 1',
+            [normalizedTmId, targetDate]
+        );
+        const reportId = reportRows[0]?.id;
+
+        if (!reportId) {
+            throw new Error('Failed to load report id after upsert');
+        }
+
+        await conn.query('DELETE FROM tm_daily_report_leads WHERE report_id = ?', [reportId]);
+
+        const pushDetail = (metricType, rows, bucket) => {
+            rows.forEach((row) => {
+                bucket.push([
+                    reportId,
+                    metricType,
+                    row.id,
+                    row.name || null,
+                    row.phone || null,
+                    row.status || null,
+                    row.reservation_at || null,
+                    row.latest_memo || null,
+                ]);
+            });
+        };
+
+        const detailValues = [];
+        pushDetail('MISSED', missed, detailValues);
+        pushDetail('RESERVED', reserved, detailValues);
+        pushDetail('VISIT_TODAY', visitToday, detailValues);
+        pushDetail('VISIT_NEXTDAY', visitNextday, detailValues);
+
+        if (detailValues.length > 0) {
+            await conn.query(
+                `
+                INSERT INTO tm_daily_report_leads (
+                    report_id,
+                    metric_type,
+                    lead_id,
+                    name_snapshot,
+                    phone_snapshot,
+                    status_snapshot,
+                    reservation_at_snapshot,
+                    memo_snapshot
+                ) VALUES ?
+                `,
+                [detailValues]
+            );
+        }
+
+        await conn.commit();
+
+        return res.json({
+            ok: true,
+            reportId,
+            reportDate: targetDate,
+            summary: {
+                totalCallCount: callRows.length,
+                missedCount: missed.length,
+                reservedCount: reserved.length,
+                visitTodayCount: visitToday.length,
+                visitNextdayCount: visitNextday.length,
+            },
+        });
+    } catch (err) {
+        await conn.rollback();
+        console.error(err);
+        return res.status(500).json({ error: 'Close report failed' });
+    } finally {
+        conn.release();
+    }
+});
+
+app.get('/admin/reports/daily', async (req, res) => {
+    const targetDate = normalizeReportDate(req.query?.date);
+    if (!targetDate) {
+        return res.status(400).json({ error: 'date must be YYYY-MM-DD' });
+    }
+
+    try {
+        const [rows] = await pool.query(
+            `
+            SELECT
+                r.id,
+                r.tm_id,
+                t.name AS tm_name,
+                r.report_date,
+                r.total_call_count,
+                r.missed_count,
+                r.reserved_count,
+                r.visit_today_count,
+                r.visit_nextday_count,
+                r.submitted_at
+            FROM tm_daily_report r
+            INNER JOIN tm t ON t.id = r.tm_id
+            WHERE r.report_date = ?
+            ORDER BY t.name ASC, r.id DESC
+            `,
+            [targetDate]
+        );
+        return res.json({ date: targetDate, reports: rows });
+    } catch (err) {
+        console.error(err);
+        return res.status(500).json({ error: 'Fetch daily reports failed' });
+    }
+});
+
+app.get('/admin/reports/:reportId/leads', async (req, res) => {
+    const { reportId } = req.params;
+    const metric = String(req.query?.metric || '').toUpperCase();
+
+    if (!reportId || Number.isNaN(Number(reportId))) {
+        return res.status(400).json({ error: 'valid reportId is required' });
+    }
+    if (!REPORT_METRIC_TYPES.has(metric)) {
+        return res.status(400).json({ error: 'metric must be one of MISSED, RESERVED, VISIT_TODAY, VISIT_NEXTDAY' });
+    }
+
+    try {
+        const [rows] = await pool.query(
+            `
+            SELECT
+                id,
+                lead_id,
+                name_snapshot,
+                phone_snapshot,
+                status_snapshot,
+                reservation_at_snapshot,
+                memo_snapshot,
+                created_at
+            FROM tm_daily_report_leads
+            WHERE report_id = ?
+              AND metric_type = ?
+            ORDER BY id DESC
+            `,
+            [reportId, metric]
+        );
+        return res.json({ reportId: Number(reportId), metric, leads: rows });
+    } catch (err) {
+        console.error(err);
+        return res.status(500).json({ error: 'Fetch report leads failed' });
     }
 });
 
