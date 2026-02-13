@@ -197,7 +197,7 @@ const formatPhone = (value) => {
     return String(value);
 };
 
-const REPORT_METRIC_TYPES = new Set(['MISSED', 'RESERVED', 'VISIT_TODAY', 'VISIT_NEXTDAY']);
+const REPORT_METRIC_TYPES = new Set(['MISSED', 'RESERVED', 'VISIT_TODAY', 'VISIT_NEXTDAY', 'FAILED']);
 
 const toDateKey = (value) => {
     if (!value) return '';
@@ -252,9 +252,11 @@ const ensureReportSchema = async () => {
             const has = new Set((cols || []).map((row) => row.COLUMN_NAME));
             const alterParts = [];
             if (!has.has('manual_reserved_count')) alterParts.push('ADD COLUMN manual_reserved_count int DEFAULT NULL');
+            if (!has.has('manual_failed_count')) alterParts.push('ADD COLUMN manual_failed_count int DEFAULT NULL');
             if (!has.has('manual_visit_today_count')) alterParts.push('ADD COLUMN manual_visit_today_count int DEFAULT NULL');
             if (!has.has('manual_visit_nextday_count')) alterParts.push('ADD COLUMN manual_visit_nextday_count int DEFAULT NULL');
             if (!has.has('manual_call_count')) alterParts.push('ADD COLUMN manual_call_count int DEFAULT NULL');
+            if (!has.has('failed_count')) alterParts.push('ADD COLUMN failed_count int NOT NULL DEFAULT 0');
             if (!has.has('check_db_crm')) alterParts.push('ADD COLUMN check_db_crm tinyint(1) NOT NULL DEFAULT 0');
             if (!has.has('check_inhouse_crm')) alterParts.push('ADD COLUMN check_inhouse_crm tinyint(1) NOT NULL DEFAULT 0');
             if (!has.has('check_sheet')) alterParts.push('ADD COLUMN check_sheet tinyint(1) NOT NULL DEFAULT 0');
@@ -310,6 +312,7 @@ const getDailySummaryRows = async (conn, tmId, reportDate) => {
 
     const statusEq = (row, value) => String(row.status || '').trim() === value;
     const missed = callRows.filter((row) => statusEq(row, '부재중'));
+    const failed = callRows.filter((row) => statusEq(row, '실패'));
     const reserved = callRows.filter((row) => statusEq(row, '예약'));
     const visitToday = reserved.filter((row) => toDateKey(row.reservation_at) === reportDate);
     const visitNextday = reserved.filter((row) => toDateKey(row.reservation_at) === nextDay);
@@ -317,6 +320,7 @@ const getDailySummaryRows = async (conn, tmId, reportDate) => {
     return {
         callRows,
         missed,
+        failed,
         reserved,
         visitToday,
         visitNextday,
@@ -326,6 +330,7 @@ const getDailySummaryRows = async (conn, tmId, reportDate) => {
 const upsertReportBase = async (conn, tmId, reportDate, summary) => {
     const totalCallCount = summary.callRows.length;
     const missedCount = summary.missed.length;
+    const failedCount = summary.failed.length;
     const reservedCount = summary.reserved.length;
     const visitTodayCount = summary.visitToday.length;
     const visitNextdayCount = summary.visitNextday.length;
@@ -337,21 +342,23 @@ const upsertReportBase = async (conn, tmId, reportDate, summary) => {
             report_date,
             total_call_count,
             missed_count,
+            failed_count,
             reserved_count,
             visit_today_count,
             visit_nextday_count,
             created_at,
             updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
         ON DUPLICATE KEY UPDATE
             total_call_count = VALUES(total_call_count),
             missed_count = VALUES(missed_count),
+            failed_count = VALUES(failed_count),
             reserved_count = VALUES(reserved_count),
             visit_today_count = VALUES(visit_today_count),
             visit_nextday_count = VALUES(visit_nextday_count),
             updated_at = NOW()
         `,
-        [String(tmId), reportDate, totalCallCount, missedCount, reservedCount, visitTodayCount, visitNextdayCount]
+        [String(tmId), reportDate, totalCallCount, missedCount, failedCount, reservedCount, visitTodayCount, visitNextdayCount]
     );
 
     const [rows] = await conn.query(
@@ -365,6 +372,7 @@ const upsertReportBase = async (conn, tmId, reportDate, summary) => {
         reportId,
         totalCallCount,
         missedCount,
+        failedCount,
         reservedCount,
         visitTodayCount,
         visitNextdayCount,
@@ -389,6 +397,7 @@ const replaceReportLeads = async (conn, reportId, summary) => {
         });
     };
     pushDetail('MISSED', summary.missed);
+    pushDetail('FAILED', summary.failed);
     pushDetail('RESERVED', summary.reserved);
     pushDetail('VISIT_TODAY', summary.visitToday);
     pushDetail('VISIT_NEXTDAY', summary.visitNextday);
@@ -634,6 +643,7 @@ app.post('/tm/reports/close', async (req, res) => {
 
     const conn = await pool.getConnection();
     try {
+        await ensureReportSchema();
         await conn.beginTransaction();
 
         const [callRows] = await conn.query(
@@ -656,6 +666,7 @@ app.post('/tm/reports/close', async (req, res) => {
 
         const statusEq = (row, value) => String(row.status || '').trim() === value;
         const missed = callRows.filter((row) => statusEq(row, '부재중'));
+        const failed = callRows.filter((row) => statusEq(row, '실패'));
         const reserved = callRows.filter((row) => statusEq(row, '예약'));
         const visitToday = reserved.filter((row) => toDateKey(row.reservation_at) === targetDate);
         const visitNextday = reserved.filter((row) => toDateKey(row.reservation_at) === nextDay);
@@ -667,16 +678,18 @@ app.post('/tm/reports/close', async (req, res) => {
                 report_date,
                 total_call_count,
                 missed_count,
+                failed_count,
                 reserved_count,
                 visit_today_count,
                 visit_nextday_count,
                 submitted_at,
                 created_at,
                 updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), NOW())
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), NOW())
             ON DUPLICATE KEY UPDATE
                 total_call_count = VALUES(total_call_count),
                 missed_count = VALUES(missed_count),
+                failed_count = VALUES(failed_count),
                 reserved_count = VALUES(reserved_count),
                 visit_today_count = VALUES(visit_today_count),
                 visit_nextday_count = VALUES(visit_nextday_count),
@@ -688,6 +701,7 @@ app.post('/tm/reports/close', async (req, res) => {
                 targetDate,
                 callRows.length,
                 missed.length,
+                failed.length,
                 reserved.length,
                 visitToday.length,
                 visitNextday.length
@@ -723,6 +737,7 @@ app.post('/tm/reports/close', async (req, res) => {
 
         const detailValues = [];
         pushDetail('MISSED', missed, detailValues);
+        pushDetail('FAILED', failed, detailValues);
         pushDetail('RESERVED', reserved, detailValues);
         pushDetail('VISIT_TODAY', visitToday, detailValues);
         pushDetail('VISIT_NEXTDAY', visitNextday, detailValues);
@@ -754,6 +769,7 @@ app.post('/tm/reports/close', async (req, res) => {
             summary: {
                 totalCallCount: callRows.length,
                 missedCount: missed.length,
+                failedCount: failed.length,
                 reservedCount: reserved.length,
                 visitTodayCount: visitToday.length,
                 visitNextdayCount: visitNextday.length,
@@ -782,10 +798,12 @@ app.get('/tm/reports/mine', async (req, res) => {
                 report_date,
                 total_call_count,
                 missed_count,
+                failed_count,
                 reserved_count,
                 visit_today_count,
                 visit_nextday_count,
                 manual_reserved_count,
+                manual_failed_count,
                 manual_visit_today_count,
                 manual_visit_nextday_count,
                 manual_call_count,
@@ -825,10 +843,12 @@ app.get('/tm/reports/me', async (req, res) => {
                 report_date,
                 total_call_count,
                 missed_count,
+                failed_count,
                 reserved_count,
                 visit_today_count,
                 visit_nextday_count,
                 manual_reserved_count,
+                manual_failed_count,
                 manual_visit_today_count,
                 manual_visit_nextday_count,
                 manual_call_count,
@@ -857,6 +877,7 @@ app.post('/tm/reports/draft', async (req, res) => {
     const {
         reportDate,
         manualReservedCount,
+        manualFailedCount,
         manualVisitTodayCount,
         manualVisitNextdayCount,
         manualCallCount,
@@ -881,6 +902,7 @@ app.post('/tm/reports/draft', async (req, res) => {
             UPDATE tm_daily_report
             SET
                 manual_reserved_count = COALESCE(?, manual_reserved_count),
+                manual_failed_count = COALESCE(?, manual_failed_count),
                 manual_visit_today_count = COALESCE(?, manual_visit_today_count),
                 manual_visit_nextday_count = COALESCE(?, manual_visit_nextday_count),
                 manual_call_count = COALESCE(?, manual_call_count),
@@ -892,6 +914,7 @@ app.post('/tm/reports/draft', async (req, res) => {
             `,
             [
                 normalizeNullableInt(manualReservedCount),
+                normalizeNullableInt(manualFailedCount),
                 normalizeNullableInt(manualVisitTodayCount),
                 normalizeNullableInt(manualVisitNextdayCount),
                 normalizeNullableInt(manualCallCount),
@@ -910,10 +933,12 @@ app.post('/tm/reports/draft', async (req, res) => {
                 report_date,
                 total_call_count,
                 missed_count,
+                failed_count,
                 reserved_count,
                 visit_today_count,
                 visit_nextday_count,
                 manual_reserved_count,
+                manual_failed_count,
                 manual_visit_today_count,
                 manual_visit_nextday_count,
                 manual_call_count,
@@ -962,10 +987,12 @@ app.get('/tm/reports/draft', async (req, res) => {
                 report_date,
                 total_call_count,
                 missed_count,
+                failed_count,
                 reserved_count,
                 visit_today_count,
                 visit_nextday_count,
                 manual_reserved_count,
+                manual_failed_count,
                 manual_visit_today_count,
                 manual_visit_nextday_count,
                 manual_call_count,
@@ -998,6 +1025,7 @@ app.post('/tm/reports/submit', async (req, res) => {
     const {
         reportDate,
         manualReservedCount,
+        manualFailedCount,
         manualVisitTodayCount,
         manualVisitNextdayCount,
         manualCallCount,
@@ -1031,6 +1059,7 @@ app.post('/tm/reports/submit', async (req, res) => {
             UPDATE tm_daily_report
             SET
                 manual_reserved_count = ?,
+                manual_failed_count = ?,
                 manual_visit_today_count = ?,
                 manual_visit_nextday_count = ?,
                 manual_call_count = ?,
@@ -1044,6 +1073,7 @@ app.post('/tm/reports/submit', async (req, res) => {
             `,
             [
                 normalizeNullableInt(manualReservedCount),
+                normalizeNullableInt(manualFailedCount),
                 normalizeNullableInt(manualVisitTodayCount),
                 normalizeNullableInt(manualVisitNextdayCount),
                 normalizeNullableInt(manualCallCount),
@@ -1064,6 +1094,7 @@ app.post('/tm/reports/submit', async (req, res) => {
             summary: {
                 totalCallCount: upsert.totalCallCount,
                 missedCount: upsert.missedCount,
+                failedCount: upsert.failedCount,
                 reservedCount: upsert.reservedCount,
                 visitTodayCount: upsert.visitTodayCount,
                 visitNextdayCount: upsert.visitNextdayCount,
@@ -1120,6 +1151,7 @@ app.get('/tm/reports/:reportId/full', async (req, res) => {
         );
         const grouped = {
             MISSED: [],
+            FAILED: [],
             RESERVED: [],
             VISIT_TODAY: [],
             VISIT_NEXTDAY: [],
@@ -1152,10 +1184,12 @@ app.get('/admin/reports/daily', async (req, res) => {
                 r.report_date,
                 r.total_call_count,
                 r.missed_count,
+                r.failed_count,
                 r.reserved_count,
                 r.visit_today_count,
                 r.visit_nextday_count,
                 r.manual_reserved_count,
+                r.manual_failed_count,
                 r.manual_visit_today_count,
                 r.manual_visit_nextday_count,
                 r.manual_call_count,
@@ -1186,7 +1220,7 @@ app.get('/admin/reports/:reportId/leads', async (req, res) => {
         return res.status(400).json({ error: 'valid reportId is required' });
     }
     if (!REPORT_METRIC_TYPES.has(metric)) {
-        return res.status(400).json({ error: 'metric must be one of MISSED, RESERVED, VISIT_TODAY, VISIT_NEXTDAY' });
+        return res.status(400).json({ error: 'metric must be one of MISSED, FAILED, RESERVED, VISIT_TODAY, VISIT_NEXTDAY' });
     }
 
     try {
@@ -1254,6 +1288,7 @@ app.get('/admin/reports/:reportId/full', async (req, res) => {
         );
         const grouped = {
             MISSED: [],
+            FAILED: [],
             RESERVED: [],
             VISIT_TODAY: [],
             VISIT_NEXTDAY: [],
