@@ -239,6 +239,175 @@ const latestMemoJoinSql = `
     ON m.tm_lead_id = l.id
 `;
 
+let ensureReportSchemaPromise = null;
+const ensureReportSchema = async () => {
+    if (!ensureReportSchemaPromise) {
+        ensureReportSchemaPromise = (async () => {
+            const [cols] = await pool.query(`
+                SELECT COLUMN_NAME
+                FROM INFORMATION_SCHEMA.COLUMNS
+                WHERE TABLE_SCHEMA = DATABASE()
+                  AND TABLE_NAME = 'tm_daily_report'
+            `);
+            const has = new Set((cols || []).map((row) => row.COLUMN_NAME));
+            const alterParts = [];
+            if (!has.has('manual_reserved_count')) alterParts.push('ADD COLUMN manual_reserved_count int DEFAULT NULL');
+            if (!has.has('manual_visit_today_count')) alterParts.push('ADD COLUMN manual_visit_today_count int DEFAULT NULL');
+            if (!has.has('manual_visit_nextday_count')) alterParts.push('ADD COLUMN manual_visit_nextday_count int DEFAULT NULL');
+            if (!has.has('manual_call_count')) alterParts.push('ADD COLUMN manual_call_count int DEFAULT NULL');
+            if (!has.has('check_db_crm')) alterParts.push('ADD COLUMN check_db_crm tinyint(1) NOT NULL DEFAULT 0');
+            if (!has.has('check_inhouse_crm')) alterParts.push('ADD COLUMN check_inhouse_crm tinyint(1) NOT NULL DEFAULT 0');
+            if (!has.has('check_sheet')) alterParts.push('ADD COLUMN check_sheet tinyint(1) NOT NULL DEFAULT 0');
+            if (!has.has('is_submitted')) alterParts.push('ADD COLUMN is_submitted tinyint(1) NOT NULL DEFAULT 0');
+            if (!has.has('submitted_at')) alterParts.push('ADD COLUMN submitted_at datetime DEFAULT NULL');
+
+            if (alterParts.length > 0) {
+                await pool.query(`ALTER TABLE tm_daily_report ${alterParts.join(', ')}`);
+            }
+        })().catch((err) => {
+            ensureReportSchemaPromise = null;
+            throw err;
+        });
+    }
+    return ensureReportSchemaPromise;
+};
+
+const normalizeBool = (value) => {
+    if (value === true || value === 1 || value === '1') return 1;
+    return 0;
+};
+
+const normalizeNullableInt = (value) => {
+    if (value === undefined || value === null || value === '') return null;
+    const n = Number(value);
+    if (Number.isNaN(n)) return null;
+    return Math.max(0, Math.floor(n));
+};
+
+const getDailySummaryRows = async (conn, tmId, reportDate) => {
+    const nextDay = nextDateKey(reportDate);
+    const [callRows] = await conn.query(
+        `
+        SELECT
+            l.id,
+            l.\`이름\` AS name,
+            l.\`연락처\` AS phone,
+            l.\`상태\` AS status,
+            l.\`예약_내원일시\` AS reservation_at,
+            m.memo_content AS latest_memo
+        FROM tm_leads l
+        ${latestMemoJoinSql}
+        WHERE l.tm = ?
+          AND DATE(l.\`콜_날짜시간\`) = ?
+        ORDER BY l.id DESC
+        `,
+        [String(tmId), reportDate]
+    );
+
+    const statusEq = (row, value) => String(row.status || '').trim() === value;
+    const missed = callRows.filter((row) => statusEq(row, '부재중'));
+    const reserved = callRows.filter((row) => statusEq(row, '예약'));
+    const visitToday = reserved.filter((row) => toDateKey(row.reservation_at) === reportDate);
+    const visitNextday = reserved.filter((row) => toDateKey(row.reservation_at) === nextDay);
+
+    return {
+        callRows,
+        missed,
+        reserved,
+        visitToday,
+        visitNextday,
+    };
+};
+
+const upsertReportBase = async (conn, tmId, reportDate, summary) => {
+    const totalCallCount = summary.callRows.length;
+    const missedCount = summary.missed.length;
+    const reservedCount = summary.reserved.length;
+    const visitTodayCount = summary.visitToday.length;
+    const visitNextdayCount = summary.visitNextday.length;
+
+    await conn.query(
+        `
+        INSERT INTO tm_daily_report (
+            tm_id,
+            report_date,
+            total_call_count,
+            missed_count,
+            reserved_count,
+            visit_today_count,
+            visit_nextday_count,
+            created_at,
+            updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+        ON DUPLICATE KEY UPDATE
+            total_call_count = VALUES(total_call_count),
+            missed_count = VALUES(missed_count),
+            reserved_count = VALUES(reserved_count),
+            visit_today_count = VALUES(visit_today_count),
+            visit_nextday_count = VALUES(visit_nextday_count),
+            updated_at = NOW()
+        `,
+        [String(tmId), reportDate, totalCallCount, missedCount, reservedCount, visitTodayCount, visitNextdayCount]
+    );
+
+    const [rows] = await conn.query(
+        'SELECT id FROM tm_daily_report WHERE tm_id = ? AND report_date = ? LIMIT 1',
+        [String(tmId), reportDate]
+    );
+    const reportId = rows[0]?.id;
+    if (!reportId) throw new Error('Failed to load report id');
+
+    return {
+        reportId,
+        totalCallCount,
+        missedCount,
+        reservedCount,
+        visitTodayCount,
+        visitNextdayCount,
+    };
+};
+
+const replaceReportLeads = async (conn, reportId, summary) => {
+    await conn.query('DELETE FROM tm_daily_report_leads WHERE report_id = ?', [reportId]);
+    const detailValues = [];
+    const pushDetail = (metricType, rows) => {
+        rows.forEach((row) => {
+            detailValues.push([
+                reportId,
+                metricType,
+                row.id,
+                row.name || null,
+                row.phone || null,
+                row.status || null,
+                row.reservation_at || null,
+                row.latest_memo || null,
+            ]);
+        });
+    };
+    pushDetail('MISSED', summary.missed);
+    pushDetail('RESERVED', summary.reserved);
+    pushDetail('VISIT_TODAY', summary.visitToday);
+    pushDetail('VISIT_NEXTDAY', summary.visitNextday);
+
+    if (detailValues.length > 0) {
+        await conn.query(
+            `
+            INSERT INTO tm_daily_report_leads (
+                report_id,
+                metric_type,
+                lead_id,
+                name_snapshot,
+                phone_snapshot,
+                status_snapshot,
+                reservation_at_snapshot,
+                memo_snapshot
+            ) VALUES ?
+            `,
+            [detailValues]
+        );
+    }
+};
+
 app.get('/tm/leads', async (req, res) => {
     try {
         const columns = await describeTable('tm_leads');
@@ -595,6 +764,321 @@ app.post('/tm/reports/close', async (req, res) => {
     }
 });
 
+app.get('/tm/reports/mine', async (req, res) => {
+    const tmId = req.session?.user?.id;
+    if (!tmId) return res.status(401).json({ error: 'login required' });
+
+    try {
+        await ensureReportSchema();
+        const [rows] = await pool.query(
+            `
+            SELECT
+                id,
+                tm_id,
+                report_date,
+                total_call_count,
+                missed_count,
+                reserved_count,
+                visit_today_count,
+                visit_nextday_count,
+                manual_reserved_count,
+                manual_visit_today_count,
+                manual_visit_nextday_count,
+                manual_call_count,
+                check_db_crm,
+                check_inhouse_crm,
+                check_sheet,
+                is_submitted,
+                submitted_at,
+                updated_at
+            FROM tm_daily_report
+            WHERE tm_id = ?
+            ORDER BY report_date DESC, id DESC
+            LIMIT 90
+            `,
+            [String(tmId)]
+        );
+        return res.json(rows);
+    } catch (err) {
+        console.error(err);
+        return res.status(500).json({ error: 'Fetch my reports failed' });
+    }
+});
+
+app.get('/tm/reports/me', async (req, res) => {
+    const tmId = req.session?.user?.id;
+    const reportDate = normalizeReportDate(req.query?.date);
+    if (!tmId) return res.status(401).json({ error: 'login required' });
+    if (!reportDate) return res.status(400).json({ error: 'date must be YYYY-MM-DD' });
+
+    try {
+        await ensureReportSchema();
+        const [rows] = await pool.query(
+            `
+            SELECT
+                id,
+                tm_id,
+                report_date,
+                total_call_count,
+                missed_count,
+                reserved_count,
+                visit_today_count,
+                visit_nextday_count,
+                manual_reserved_count,
+                manual_visit_today_count,
+                manual_visit_nextday_count,
+                manual_call_count,
+                check_db_crm,
+                check_inhouse_crm,
+                check_sheet,
+                is_submitted,
+                submitted_at,
+                updated_at
+            FROM tm_daily_report
+            WHERE tm_id = ?
+              AND report_date = ?
+            LIMIT 1
+            `,
+            [String(tmId), reportDate]
+        );
+        return res.json(rows[0] || null);
+    } catch (err) {
+        console.error(err);
+        return res.status(500).json({ error: 'Fetch my report failed' });
+    }
+});
+
+app.post('/tm/reports/draft', async (req, res) => {
+    const tmId = req.session?.user?.id;
+    const {
+        reportDate,
+        manualReservedCount,
+        manualVisitTodayCount,
+        manualVisitNextdayCount,
+        manualCallCount,
+        checkDbCrm,
+        checkInhouseCrm,
+        checkSheet,
+    } = req.body || {};
+
+    const targetDate = normalizeReportDate(reportDate);
+    if (!tmId) return res.status(401).json({ error: 'login required' });
+    if (!targetDate) return res.status(400).json({ error: 'reportDate must be YYYY-MM-DD' });
+
+    const conn = await pool.getConnection();
+    try {
+        await ensureReportSchema();
+        await conn.beginTransaction();
+        const summary = await getDailySummaryRows(conn, tmId, targetDate);
+        const upsert = await upsertReportBase(conn, tmId, targetDate, summary);
+
+        await conn.query(
+            `
+            UPDATE tm_daily_report
+            SET
+                manual_reserved_count = COALESCE(?, manual_reserved_count),
+                manual_visit_today_count = COALESCE(?, manual_visit_today_count),
+                manual_visit_nextday_count = COALESCE(?, manual_visit_nextday_count),
+                manual_call_count = COALESCE(?, manual_call_count),
+                check_db_crm = COALESCE(?, check_db_crm),
+                check_inhouse_crm = COALESCE(?, check_inhouse_crm),
+                check_sheet = COALESCE(?, check_sheet),
+                updated_at = NOW()
+            WHERE id = ?
+            `,
+            [
+                normalizeNullableInt(manualReservedCount),
+                normalizeNullableInt(manualVisitTodayCount),
+                normalizeNullableInt(manualVisitNextdayCount),
+                normalizeNullableInt(manualCallCount),
+                checkDbCrm === undefined ? null : normalizeBool(checkDbCrm),
+                checkInhouseCrm === undefined ? null : normalizeBool(checkInhouseCrm),
+                checkSheet === undefined ? null : normalizeBool(checkSheet),
+                upsert.reportId,
+            ]
+        );
+
+        const [rows] = await conn.query(
+            `
+            SELECT
+                id,
+                tm_id,
+                report_date,
+                total_call_count,
+                missed_count,
+                reserved_count,
+                visit_today_count,
+                visit_nextday_count,
+                manual_reserved_count,
+                manual_visit_today_count,
+                manual_visit_nextday_count,
+                manual_call_count,
+                check_db_crm,
+                check_inhouse_crm,
+                check_sheet,
+                is_submitted,
+                submitted_at,
+                updated_at
+            FROM tm_daily_report
+            WHERE id = ?
+            LIMIT 1
+            `,
+            [upsert.reportId]
+        );
+
+        await conn.commit();
+        return res.json({ ok: true, report: rows[0] || null });
+    } catch (err) {
+        await conn.rollback();
+        console.error(err);
+        return res.status(500).json({ error: 'Save draft failed' });
+    } finally {
+        conn.release();
+    }
+});
+
+app.post('/tm/reports/submit', async (req, res) => {
+    const tmId = req.session?.user?.id;
+    const {
+        reportDate,
+        manualReservedCount,
+        manualVisitTodayCount,
+        manualVisitNextdayCount,
+        manualCallCount,
+        checkDbCrm,
+        checkInhouseCrm,
+        checkSheet,
+    } = req.body || {};
+
+    const targetDate = normalizeReportDate(reportDate);
+    if (!tmId) return res.status(401).json({ error: 'login required' });
+    if (!targetDate) return res.status(400).json({ error: 'reportDate must be YYYY-MM-DD' });
+
+    const checklist = {
+        checkDbCrm: normalizeBool(checkDbCrm),
+        checkInhouseCrm: normalizeBool(checkInhouseCrm),
+        checkSheet: normalizeBool(checkSheet),
+    };
+    if (!(checklist.checkDbCrm && checklist.checkInhouseCrm && checklist.checkSheet)) {
+        return res.status(400).json({ error: '모든 당일 기입 항목을 완료해야 제출할 수 있습니다.' });
+    }
+
+    const conn = await pool.getConnection();
+    try {
+        await ensureReportSchema();
+        await conn.beginTransaction();
+        const summary = await getDailySummaryRows(conn, tmId, targetDate);
+        const upsert = await upsertReportBase(conn, tmId, targetDate, summary);
+
+        await conn.query(
+            `
+            UPDATE tm_daily_report
+            SET
+                manual_reserved_count = ?,
+                manual_visit_today_count = ?,
+                manual_visit_nextday_count = ?,
+                manual_call_count = ?,
+                check_db_crm = ?,
+                check_inhouse_crm = ?,
+                check_sheet = ?,
+                is_submitted = 1,
+                submitted_at = NOW(),
+                updated_at = NOW()
+            WHERE id = ?
+            `,
+            [
+                normalizeNullableInt(manualReservedCount),
+                normalizeNullableInt(manualVisitTodayCount),
+                normalizeNullableInt(manualVisitNextdayCount),
+                normalizeNullableInt(manualCallCount),
+                checklist.checkDbCrm,
+                checklist.checkInhouseCrm,
+                checklist.checkSheet,
+                upsert.reportId,
+            ]
+        );
+
+        await replaceReportLeads(conn, upsert.reportId, summary);
+        await conn.commit();
+
+        return res.json({
+            ok: true,
+            reportId: upsert.reportId,
+            reportDate: targetDate,
+            summary: {
+                totalCallCount: upsert.totalCallCount,
+                missedCount: upsert.missedCount,
+                reservedCount: upsert.reservedCount,
+                visitTodayCount: upsert.visitTodayCount,
+                visitNextdayCount: upsert.visitNextdayCount,
+            },
+        });
+    } catch (err) {
+        await conn.rollback();
+        console.error(err);
+        return res.status(500).json({ error: 'Submit report failed' });
+    } finally {
+        conn.release();
+    }
+});
+
+app.get('/tm/reports/:reportId/full', async (req, res) => {
+    const tmId = req.session?.user?.id;
+    const reportId = Number(req.params?.reportId);
+    if (!tmId) return res.status(401).json({ error: 'login required' });
+    if (Number.isNaN(reportId)) return res.status(400).json({ error: 'valid reportId is required' });
+
+    try {
+        await ensureReportSchema();
+        const [reportRows] = await pool.query(
+            `
+            SELECT
+                r.*,
+                t.name AS tm_name
+            FROM tm_daily_report r
+            INNER JOIN tm t ON t.id = r.tm_id
+            WHERE r.id = ?
+              AND r.tm_id = ?
+            LIMIT 1
+            `,
+            [reportId, String(tmId)]
+        );
+        const report = reportRows[0];
+        if (!report) return res.status(404).json({ error: 'report not found' });
+
+        const [leadRows] = await pool.query(
+            `
+            SELECT
+                metric_type,
+                lead_id,
+                name_snapshot,
+                phone_snapshot,
+                status_snapshot,
+                reservation_at_snapshot,
+                memo_snapshot
+            FROM tm_daily_report_leads
+            WHERE report_id = ?
+            ORDER BY id DESC
+            `,
+            [reportId]
+        );
+        const grouped = {
+            MISSED: [],
+            RESERVED: [],
+            VISIT_TODAY: [],
+            VISIT_NEXTDAY: [],
+        };
+        leadRows.forEach((row) => {
+            if (!grouped[row.metric_type]) grouped[row.metric_type] = [];
+            grouped[row.metric_type].push(row);
+        });
+        return res.json({ report, leads: grouped });
+    } catch (err) {
+        console.error(err);
+        return res.status(500).json({ error: 'Fetch report full failed' });
+    }
+});
+
 app.get('/admin/reports/daily', async (req, res) => {
     const targetDate = normalizeReportDate(req.query?.date);
     if (!targetDate) {
@@ -602,6 +1086,7 @@ app.get('/admin/reports/daily', async (req, res) => {
     }
 
     try {
+        await ensureReportSchema();
         const [rows] = await pool.query(
             `
             SELECT
@@ -614,6 +1099,14 @@ app.get('/admin/reports/daily', async (req, res) => {
                 r.reserved_count,
                 r.visit_today_count,
                 r.visit_nextday_count,
+                r.manual_reserved_count,
+                r.manual_visit_today_count,
+                r.manual_visit_nextday_count,
+                r.manual_call_count,
+                r.check_db_crm,
+                r.check_inhouse_crm,
+                r.check_sheet,
+                r.is_submitted,
                 r.submitted_at
             FROM tm_daily_report r
             INNER JOIN tm t ON t.id = r.tm_id
@@ -663,6 +1156,60 @@ app.get('/admin/reports/:reportId/leads', async (req, res) => {
     } catch (err) {
         console.error(err);
         return res.status(500).json({ error: 'Fetch report leads failed' });
+    }
+});
+
+app.get('/admin/reports/:reportId/full', async (req, res) => {
+    const reportId = Number(req.params?.reportId);
+    if (Number.isNaN(reportId)) return res.status(400).json({ error: 'valid reportId is required' });
+
+    try {
+        await ensureReportSchema();
+        const [reportRows] = await pool.query(
+            `
+            SELECT
+                r.*,
+                t.name AS tm_name
+            FROM tm_daily_report r
+            INNER JOIN tm t ON t.id = r.tm_id
+            WHERE r.id = ?
+            LIMIT 1
+            `,
+            [reportId]
+        );
+        const report = reportRows[0];
+        if (!report) return res.status(404).json({ error: 'report not found' });
+
+        const [leadRows] = await pool.query(
+            `
+            SELECT
+                metric_type,
+                lead_id,
+                name_snapshot,
+                phone_snapshot,
+                status_snapshot,
+                reservation_at_snapshot,
+                memo_snapshot
+            FROM tm_daily_report_leads
+            WHERE report_id = ?
+            ORDER BY id DESC
+            `,
+            [reportId]
+        );
+        const grouped = {
+            MISSED: [],
+            RESERVED: [],
+            VISIT_TODAY: [],
+            VISIT_NEXTDAY: [],
+        };
+        leadRows.forEach((row) => {
+            if (!grouped[row.metric_type]) grouped[row.metric_type] = [];
+            grouped[row.metric_type].push(row);
+        });
+        return res.json({ report, leads: grouped });
+    } catch (err) {
+        console.error(err);
+        return res.status(500).json({ error: 'Fetch report full failed' });
     }
 });
 
