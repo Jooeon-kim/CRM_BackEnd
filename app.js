@@ -284,6 +284,10 @@ const normalizeNullableInt = (value) => {
     return Math.max(0, Math.floor(n));
 };
 
+const resolveTmId = (req) => {
+    return req.session?.user?.id || req.body?.tmId || req.query?.tmId || null;
+};
+
 const getDailySummaryRows = async (conn, tmId, reportDate) => {
     const nextDay = nextDateKey(reportDate);
     const [callRows] = await conn.query(
@@ -765,8 +769,8 @@ app.post('/tm/reports/close', async (req, res) => {
 });
 
 app.get('/tm/reports/mine', async (req, res) => {
-    const tmId = req.session?.user?.id;
-    if (!tmId) return res.status(401).json({ error: 'login required' });
+    const tmId = resolveTmId(req);
+    if (!tmId) return res.status(401).json({ error: 'login required or tmId required' });
 
     try {
         await ensureReportSchema();
@@ -806,9 +810,9 @@ app.get('/tm/reports/mine', async (req, res) => {
 });
 
 app.get('/tm/reports/me', async (req, res) => {
-    const tmId = req.session?.user?.id;
+    const tmId = resolveTmId(req);
     const reportDate = normalizeReportDate(req.query?.date);
-    if (!tmId) return res.status(401).json({ error: 'login required' });
+    if (!tmId) return res.status(401).json({ error: 'login required or tmId required' });
     if (!reportDate) return res.status(400).json({ error: 'date must be YYYY-MM-DD' });
 
     try {
@@ -849,7 +853,7 @@ app.get('/tm/reports/me', async (req, res) => {
 });
 
 app.post('/tm/reports/draft', async (req, res) => {
-    const tmId = req.session?.user?.id;
+    const tmId = resolveTmId(req);
     const {
         reportDate,
         manualReservedCount,
@@ -862,7 +866,7 @@ app.post('/tm/reports/draft', async (req, res) => {
     } = req.body || {};
 
     const targetDate = normalizeReportDate(reportDate);
-    if (!tmId) return res.status(401).json({ error: 'login required' });
+    if (!tmId) return res.status(401).json({ error: 'login required or tmId required' });
     if (!targetDate) return res.status(400).json({ error: 'reportDate must be YYYY-MM-DD' });
 
     const conn = await pool.getConnection();
@@ -938,9 +942,9 @@ app.post('/tm/reports/draft', async (req, res) => {
 });
 
 app.get('/tm/reports/draft', async (req, res) => {
-    const tmId = req.session?.user?.id;
+    const tmId = resolveTmId(req);
     const targetDate = normalizeReportDate(req.query?.reportDate || req.query?.date);
-    if (!tmId) return res.status(401).json({ error: 'login required' });
+    if (!tmId) return res.status(401).json({ error: 'login required or tmId required' });
     if (!targetDate) return res.status(400).json({ error: 'reportDate must be YYYY-MM-DD' });
 
     const conn = await pool.getConnection();
@@ -990,7 +994,7 @@ app.get('/tm/reports/draft', async (req, res) => {
 });
 
 app.post('/tm/reports/submit', async (req, res) => {
-    const tmId = req.session?.user?.id;
+    const tmId = resolveTmId(req);
     const {
         reportDate,
         manualReservedCount,
@@ -1003,7 +1007,7 @@ app.post('/tm/reports/submit', async (req, res) => {
     } = req.body || {};
 
     const targetDate = normalizeReportDate(reportDate);
-    if (!tmId) return res.status(401).json({ error: 'login required' });
+    if (!tmId) return res.status(401).json({ error: 'login required or tmId required' });
     if (!targetDate) return res.status(400).json({ error: 'reportDate must be YYYY-MM-DD' });
 
     const checklist = {
@@ -1075,9 +1079,9 @@ app.post('/tm/reports/submit', async (req, res) => {
 });
 
 app.get('/tm/reports/:reportId/full', async (req, res) => {
-    const tmId = req.session?.user?.id;
+    const tmId = resolveTmId(req);
     const reportId = Number(req.params?.reportId);
-    if (!tmId) return res.status(401).json({ error: 'login required' });
+    if (!tmId) return res.status(401).json({ error: 'login required or tmId required' });
     if (Number.isNaN(reportId)) return res.status(400).json({ error: 'valid reportId is required' });
 
     try {
