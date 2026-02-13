@@ -522,7 +522,7 @@ app.patch('/tm/agents/:id', async (req, res) => {
 
 app.post('/tm/assign', async (req, res) => {
     const { leadId, tmId } = req.body || {};
-    if (!leadId || !tmId) {
+    if (!leadId || tmId === undefined || tmId === null || tmId === '') {
         return res.status(400).json({ error: 'leadId and tmId are required' });
     }
 
