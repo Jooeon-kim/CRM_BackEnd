@@ -556,7 +556,7 @@ app.post('/tm/assign', async (req, res) => {
 });
 
 app.get('/tm/memos', async (req, res) => {
-    const { phone, detailed } = req.query || {};
+    const { phone, detailed, leadId } = req.query || {};
     if (!phone) {
         return res.status(400).json({ error: 'phone is required' });
     }
@@ -568,6 +568,8 @@ app.get('/tm/memos', async (req, res) => {
         return res.status(400).json({ error: 'valid phone is required' });
     }
     const detailedMode = detailed === '1' || detailed === 'true' || detailed === true;
+    const excludeLeadId = Number(leadId);
+    const hasExcludeLeadId = !Number.isNaN(excludeLeadId);
 
     try {
         const normalizePhoneSql = (col) => `
@@ -603,17 +605,26 @@ app.get('/tm/memos', async (req, res) => {
             return res.json(rows);
         }
 
-        const [eventRows] = await pool.query(
-            `
-            SELECT DISTINCT l.\`이벤트\` AS event_name
-            FROM tm_leads l
-            WHERE ${normalizePhoneSql('l.연락처')} = ?
-              AND l.\`이벤트\` IS NOT NULL
-              AND TRIM(l.\`이벤트\`) <> ''
-            ORDER BY event_name ASC
-            `,
-            [normalizedPhone]
-        );
+        const eventSql = hasExcludeLeadId
+            ? `
+              SELECT DISTINCT l.\`이벤트\` AS event_name
+              FROM tm_leads l
+              WHERE ${normalizePhoneSql('l.연락처')} = ?
+                AND l.id <> ?
+                AND l.\`이벤트\` IS NOT NULL
+                AND TRIM(l.\`이벤트\`) <> ''
+              ORDER BY event_name ASC
+              `
+            : `
+              SELECT DISTINCT l.\`이벤트\` AS event_name
+              FROM tm_leads l
+              WHERE ${normalizePhoneSql('l.연락처')} = ?
+                AND l.\`이벤트\` IS NOT NULL
+                AND TRIM(l.\`이벤트\`) <> ''
+              ORDER BY event_name ASC
+              `;
+        const eventParams = hasExcludeLeadId ? [normalizedPhone, excludeLeadId] : [normalizedPhone];
+        const [eventRows] = await pool.query(eventSql, eventParams);
 
         return res.json({
             memos: rows,
