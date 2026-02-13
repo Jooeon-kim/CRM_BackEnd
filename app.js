@@ -556,16 +556,69 @@ app.post('/tm/assign', async (req, res) => {
 });
 
 app.get('/tm/memos', async (req, res) => {
-    const { phone } = req.query || {};
+    const { phone, detailed } = req.query || {};
     if (!phone) {
         return res.status(400).json({ error: 'phone is required' });
     }
+    let normalizedPhone = String(phone).replace(/\D/g, '');
+    if (normalizedPhone.startsWith('82')) {
+        normalizedPhone = `0${normalizedPhone.slice(2)}`;
+    }
+    if (!normalizedPhone) {
+        return res.status(400).json({ error: 'valid phone is required' });
+    }
+    const detailedMode = detailed === '1' || detailed === 'true' || detailed === true;
+
     try {
+        const normalizePhoneSql = (col) => `
+            REPLACE(
+                REPLACE(
+                    REPLACE(
+                        REPLACE(
+                            REPLACE(
+                                REPLACE(LOWER(${col}), 'p:', ''),
+                            '-', ''),
+                        ' ', ''),
+                    '+82', '0'),
+                '(', ''),
+            ')', '')
+        `;
+
         const [rows] = await pool.query(
-            'SELECT memo_time, memo_content, tm_id FROM tm_memos WHERE target_phone = ? ORDER BY memo_time DESC',
-            [phone]
+            `
+            SELECT
+                m.memo_time,
+                m.memo_content,
+                m.tm_id,
+                t.name AS tm_name
+            FROM tm_memos m
+            LEFT JOIN tm t ON t.id = m.tm_id
+            WHERE ${normalizePhoneSql('m.target_phone')} = ?
+            ORDER BY m.memo_time DESC
+            `,
+            [normalizedPhone]
         );
-        res.json(rows);
+
+        if (!detailedMode) {
+            return res.json(rows);
+        }
+
+        const [eventRows] = await pool.query(
+            `
+            SELECT DISTINCT l.\`이벤트\` AS event_name
+            FROM tm_leads l
+            WHERE ${normalizePhoneSql('l.연락처')} = ?
+              AND l.\`이벤트\` IS NOT NULL
+              AND TRIM(l.\`이벤트\`) <> ''
+            ORDER BY event_name ASC
+            `,
+            [normalizedPhone]
+        );
+
+        return res.json({
+            memos: rows,
+            events: (eventRows || []).map((row) => row.event_name).filter(Boolean),
+        });
     } catch (err) {
         console.error(err);
         res.status(500).json({ error: 'DB query failed' });
