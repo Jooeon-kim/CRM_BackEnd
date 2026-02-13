@@ -570,7 +570,7 @@ app.post('/tm/leads/:id/update', async (req, res) => {
         return res.status(400).json({ error: 'status and tmId are required' });
     }
 
-    const callStatuses = ['부재중', '리콜대기', '예약'];
+    const callStatuses = ['부재중', '리콜대기', '예약', '실패'];
     const isMissed = status === '부재중';
     const isNoShow = status === '예약부도';
     const incCall = callStatuses.includes(status) || isNoShow;
@@ -1411,7 +1411,7 @@ app.post('/admin/leads/:id/update', async (req, res) => {
             updates.push('예약_내원일시 = ?');
             params.push(reservationAt || null);
 
-            const callStatuses = ['부재중', '리콜대기', '예약'];
+            const callStatuses = ['부재중', '리콜대기', '예약', '실패'];
             const isMissed = status === '부재중';
             const isNoShow = status === '예약부도';
             const incCall = callStatuses.includes(status) || isNoShow;
