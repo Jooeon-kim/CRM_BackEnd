@@ -937,6 +937,58 @@ app.post('/tm/reports/draft', async (req, res) => {
     }
 });
 
+app.get('/tm/reports/draft', async (req, res) => {
+    const tmId = req.session?.user?.id;
+    const targetDate = normalizeReportDate(req.query?.reportDate || req.query?.date);
+    if (!tmId) return res.status(401).json({ error: 'login required' });
+    if (!targetDate) return res.status(400).json({ error: 'reportDate must be YYYY-MM-DD' });
+
+    const conn = await pool.getConnection();
+    try {
+        await ensureReportSchema();
+        await conn.beginTransaction();
+        const summary = await getDailySummaryRows(conn, tmId, targetDate);
+        const upsert = await upsertReportBase(conn, tmId, targetDate, summary);
+
+        const [rows] = await conn.query(
+            `
+            SELECT
+                id,
+                tm_id,
+                report_date,
+                total_call_count,
+                missed_count,
+                reserved_count,
+                visit_today_count,
+                visit_nextday_count,
+                manual_reserved_count,
+                manual_visit_today_count,
+                manual_visit_nextday_count,
+                manual_call_count,
+                check_db_crm,
+                check_inhouse_crm,
+                check_sheet,
+                is_submitted,
+                submitted_at,
+                updated_at
+            FROM tm_daily_report
+            WHERE id = ?
+            LIMIT 1
+            `,
+            [upsert.reportId]
+        );
+
+        await conn.commit();
+        return res.json({ ok: true, report: rows[0] || null });
+    } catch (err) {
+        await conn.rollback();
+        console.error(err);
+        return res.status(500).json({ error: 'Fetch draft failed' });
+    } finally {
+        conn.release();
+    }
+});
+
 app.post('/tm/reports/submit', async (req, res) => {
     const tmId = req.session?.user?.id;
     const {
