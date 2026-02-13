@@ -444,7 +444,7 @@ app.get('/tm/leads', async (req, res) => {
         if (map.assignedTm) {
             leads = leads.filter((lead) => {
                 const val = lead.assignedTm;
-                return val === null || val === undefined || val === '' || Number(val) === 0;
+                return val === null || val === undefined || val === '';
             });
         }
 
@@ -1563,7 +1563,7 @@ app.get('/tm/leads/export', async (req, res) => {
         if (map.assignedTm) {
             leads = leads.filter((lead) => {
                 const val = lead.assignedTm;
-                return val === null || val === undefined || val === '' || Number(val) === 0;
+                return val === null || val === undefined || val === '';
             });
         }
 
