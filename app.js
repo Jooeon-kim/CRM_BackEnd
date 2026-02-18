@@ -306,6 +306,7 @@ const getDailySummaryRows = async (conn, tmId, reportDate) => {
             l.\`이름\` AS name,
             l.\`연락처\` AS phone,
             l.\`상태\` AS status,
+            COALESCE(l.\`콜횟수\`, 0) AS call_count,
             l.\`예약_내원일시\` AS reservation_at,
             m.memo_content AS latest_memo
         FROM tm_leads l
@@ -323,9 +324,14 @@ const getDailySummaryRows = async (conn, tmId, reportDate) => {
     const reserved = callRows.filter((row) => statusEq(row, '예약'));
     const visitToday = reserved.filter((row) => toDateKey(row.reservation_at) === reportDate);
     const visitNextday = reserved.filter((row) => toDateKey(row.reservation_at) === nextDay);
+    const totalCallCount = callRows.reduce((sum, row) => {
+        const n = Number(row.call_count);
+        return sum + (Number.isNaN(n) ? 0 : Math.max(0, Math.floor(n)));
+    }, 0);
 
     return {
         callRows,
+        totalCallCount,
         missed,
         failed,
         reserved,
@@ -335,7 +341,7 @@ const getDailySummaryRows = async (conn, tmId, reportDate) => {
 };
 
 const upsertReportBase = async (conn, tmId, reportDate, summary) => {
-    const totalCallCount = summary.callRows.length;
+    const totalCallCount = Number(summary.totalCallCount || 0);
     const missedCount = summary.missed.length;
     const failedCount = summary.failed.length;
     const reservedCount = summary.reserved.length;
@@ -719,14 +725,15 @@ app.post('/tm/reports/close', async (req, res) => {
 
         const [callRows] = await conn.query(
             `
-            SELECT
-                l.id,
-                l.\`이름\` AS name,
-                l.\`연락처\` AS phone,
-                l.\`상태\` AS status,
-                l.\`예약_내원일시\` AS reservation_at,
-                m.memo_content AS latest_memo
-            FROM tm_leads l
+        SELECT
+            l.id,
+            l.\`이름\` AS name,
+            l.\`연락처\` AS phone,
+            l.\`상태\` AS status,
+            COALESCE(l.\`콜횟수\`, 0) AS call_count,
+            l.\`예약_내원일시\` AS reservation_at,
+            m.memo_content AS latest_memo
+        FROM tm_leads l
             ${latestMemoJoinSql}
             WHERE l.tm = ?
               AND DATE(l.\`콜_날짜시간\`) = ?
@@ -741,6 +748,10 @@ app.post('/tm/reports/close', async (req, res) => {
         const reserved = callRows.filter((row) => statusEq(row, '예약'));
         const visitToday = reserved.filter((row) => toDateKey(row.reservation_at) === targetDate);
         const visitNextday = reserved.filter((row) => toDateKey(row.reservation_at) === nextDay);
+        const totalCallCount = callRows.reduce((sum, row) => {
+            const n = Number(row.call_count);
+            return sum + (Number.isNaN(n) ? 0 : Math.max(0, Math.floor(n)));
+        }, 0);
 
         await conn.query(
             `
@@ -770,7 +781,7 @@ app.post('/tm/reports/close', async (req, res) => {
             [
                 normalizedTmId,
                 targetDate,
-                callRows.length,
+                totalCallCount,
                 missed.length,
                 failed.length,
                 reserved.length,
@@ -838,7 +849,7 @@ app.post('/tm/reports/close', async (req, res) => {
             reportId,
             reportDate: targetDate,
             summary: {
-                totalCallCount: callRows.length,
+                totalCallCount,
                 missedCount: missed.length,
                 failedCount: failed.length,
                 reservedCount: reserved.length,
