@@ -5,16 +5,23 @@ require('dotenv').config();
 const pool = require('./db');
 
 const app = express();
+const normalizeOrigin = (value) => String(value || '')
+    .trim()
+    .replace(/^"+|"+$/g, '')
+    .replace(/\/+$/, '')
+    .toLowerCase();
+
 const allowedOrigins = (process.env.CORS_ORIGIN || '')
     .split(',')
     .map((origin) => origin.trim())
     .filter(Boolean);
+const allowedOriginSet = new Set(allowedOrigins.map(normalizeOrigin).filter(Boolean));
 
 app.use(cors({
     origin: (origin, callback) => {
         if (!origin) return callback(null, true);
-        if (allowedOrigins.length === 0) return callback(null, true);
-        if (allowedOrigins.includes(origin)) return callback(null, true);
+        if (allowedOriginSet.size === 0) return callback(null, true);
+        if (allowedOriginSet.has(normalizeOrigin(origin))) return callback(null, true);
         return callback(new Error('Not allowed by CORS'));
     },
     credentials: true,
