@@ -958,8 +958,9 @@ app.post('/tm/reports/draft', async (req, res) => {
     try {
         await ensureReportSchema();
         await conn.beginTransaction();
-        const summary = await getDailySummaryRows(conn, tmId, targetDate);
-        const upsert = await upsertReportBase(conn, tmId, targetDate, summary);
+          const summary = await getDailySummaryRows(conn, tmId, targetDate);
+          const upsert = await upsertReportBase(conn, tmId, targetDate, summary);
+          await replaceReportLeads(conn, upsert.reportId, summary);
 
         await conn.query(
             `
@@ -1040,8 +1041,9 @@ app.get('/tm/reports/draft', async (req, res) => {
     try {
         await ensureReportSchema();
         await conn.beginTransaction();
-        const summary = await getDailySummaryRows(conn, tmId, targetDate);
-        const upsert = await upsertReportBase(conn, tmId, targetDate, summary);
+          const summary = await getDailySummaryRows(conn, tmId, targetDate);
+          const upsert = await upsertReportBase(conn, tmId, targetDate, summary);
+          await replaceReportLeads(conn, upsert.reportId, summary);
 
         const [rows] = await conn.query(
             `
