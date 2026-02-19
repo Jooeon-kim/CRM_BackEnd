@@ -1596,6 +1596,49 @@ app.post('/admin/leads/:id/update', async (req, res) => {
     }
 });
 
+app.post('/admin/leads/reassign-bulk', async (req, res) => {
+    const { leadIds, tmId } = req.body || {};
+    if (!Array.isArray(leadIds) || leadIds.length === 0 || tmId === undefined || tmId === null || tmId === '') {
+        return res.status(400).json({ error: 'leadIds and tmId are required' });
+    }
+
+    try {
+        const columns = await describeTable('tm_leads');
+        const idCol = pickColumn(columns, ['id', 'lead_id', 'tm_lead_id']);
+        const assignCol = pickColumn(columns, ['tm_id', 'tmid', 'assigned_tm_id', 'assigned_tm', 'tm']);
+        const assignedAtCol = pickColumn(columns, ['배정날짜', 'assigned_at', 'assigned_date', 'tm_assigned_at']);
+
+        if (!idCol || !assignCol || !assignedAtCol) {
+            return res.status(500).json({ error: 'tm_leads columns not found' });
+        }
+
+        const normalizedLeadIds = Array.from(
+            new Set(
+                leadIds
+                    .map((v) => Number(v))
+                    .filter((v) => Number.isInteger(v) && v > 0)
+            )
+        );
+
+        if (normalizedLeadIds.length === 0) {
+            return res.status(400).json({ error: 'valid leadIds are required' });
+        }
+
+        const placeholders = normalizedLeadIds.map(() => '?').join(', ');
+        const [result] = await pool.query(
+            `UPDATE tm_leads
+             SET \`${assignCol}\` = ?, \`${assignedAtCol}\` = NOW()
+             WHERE \`${idCol}\` IN (${placeholders})`,
+            [tmId, ...normalizedLeadIds]
+        );
+
+        return res.json({ ok: true, updated: result.affectedRows || 0 });
+    } catch (err) {
+        console.error(err);
+        return res.status(500).json({ error: 'DB query failed' });
+    }
+});
+
 app.get('/admin/event-rules', async (req, res) => {
     try {
         const [rows] = await pool.query(
