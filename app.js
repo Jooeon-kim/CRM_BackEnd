@@ -651,35 +651,41 @@ app.get('/tm/memos', async (req, res) => {
 
 app.post('/tm/leads/:id/update', async (req, res) => {
     const { id } = req.params;
-    const { status, region, memo, tmId, reservationAt } = req.body || {};
+    const { status, region, memo, tmId, reservationAt, name } = req.body || {};
     if (!status || !tmId) {
         return res.status(400).json({ error: 'status and tmId are required' });
     }
 
-    const callStatuses = ['부재중', '리콜대기', '예약', '실패'];
-    const isMissed = status === '부재중';
-    const isNoShow = status === '예약부도';
-    const incCall = callStatuses.includes(status) || isNoShow;
-
     try {
+        const [rows] = await pool.query('SELECT 상태 FROM tm_leads WHERE id = ?', [id]);
+        const currentStatus = rows[0]?.상태 ?? null;
+        const statusChanged = status !== currentStatus;
+        const callStatuses = ['부재중', '리콜대기', '예약', '실패'];
+        const isMissed = status === '부재중';
+        const isNoShow = status === '예약부도';
+        const incCall = statusChanged && (callStatuses.includes(status) || isNoShow);
+
         const [result] = await pool.query(
             `UPDATE tm_leads
              SET
+                이름 = COALESCE(?, 이름),
                 상태 = ?,
                 거주지 = ?,
-                콜_날짜시간 = NOW(),
+                콜_날짜시간 = CASE WHEN ? THEN NOW() ELSE 콜_날짜시간 END,
                 예약_내원일시 = ?,
                 콜횟수 = COALESCE(콜횟수, 0) + ?,
                 부재중_횟수 = COALESCE(부재중_횟수, 0) + ?,
                 예약부도_횟수 = COALESCE(예약부도_횟수, 0) + ?
              WHERE id = ?`,
             [
+                name === undefined ? null : (name || null),
                 status,
                 region || null,
+                statusChanged ? 1 : 0,
                 reservationAt || null,
                 incCall ? 1 : 0,
-                isMissed ? 1 : 0,
-                isNoShow ? 1 : 0,
+                statusChanged && isMissed ? 1 : 0,
+                statusChanged && isNoShow ? 1 : 0,
                 id
             ]
         );
@@ -1502,8 +1508,8 @@ app.post('/admin/sync-meta-leads', async (req, res) => {
 
 app.post('/admin/leads/:id/update', async (req, res) => {
     const { id } = req.params;
-    const { status, region, memo, tmId, reservationAt } = req.body || {};
-    if (!status && region === undefined && !memo && tmId === undefined && reservationAt === undefined) {
+    const { status, region, memo, tmId, reservationAt, name } = req.body || {};
+    if (!status && region === undefined && !memo && tmId === undefined && reservationAt === undefined && name === undefined) {
         return res.status(400).json({ error: 'no changes provided' });
     }
 
@@ -1548,6 +1554,11 @@ app.post('/admin/leads/:id/update', async (req, res) => {
         if (region !== undefined) {
             updates.push('거주지 = ?');
             params.push(region || null);
+        }
+
+        if (name !== undefined) {
+            updates.push('이름 = ?');
+            params.push(name || null);
         }
 
         if (tmId !== undefined) {
