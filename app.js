@@ -86,6 +86,46 @@ const ensureLeadAssignedDateColumn = async () => {
     }
 };
 
+const ensureRecallColumns = async () => {
+    const [rows] = await pool.query(`
+        SELECT COLUMN_NAME
+        FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = 'tm_leads'
+          AND COLUMN_NAME IN ('리콜_예정일시', '리콜_완료여부', '리콜_스누즈횟수')
+    `);
+    const has = new Set((rows || []).map((row) => row.COLUMN_NAME));
+    const alterParts = [];
+    if (!has.has('리콜_예정일시')) alterParts.push('ADD COLUMN `리콜_예정일시` DATETIME NULL');
+    if (!has.has('리콜_완료여부')) alterParts.push('ADD COLUMN `리콜_완료여부` TINYINT(1) NOT NULL DEFAULT 0');
+    if (!has.has('리콜_스누즈횟수')) alterParts.push('ADD COLUMN `리콜_스누즈횟수` INT NOT NULL DEFAULT 0');
+    if (alterParts.length > 0) {
+        await pool.query(`ALTER TABLE tm_leads ${alterParts.join(', ')}`);
+    }
+};
+
+const parseLocalDateTimeString = (value) => {
+    if (value === undefined || value === null || value === '') return null;
+    const raw = String(value).trim().replace('T', ' ');
+    const match = raw.match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})(?::(\d{2}))?$/);
+    if (!match) return null;
+    const year = Number(match[1]);
+    const month = Number(match[2]);
+    const day = Number(match[3]);
+    const hour = Number(match[4]);
+    const minute = Number(match[5]);
+    const second = Number(match[6] || 0);
+    const date = new Date(year, month - 1, day, hour, minute, second);
+    if (Number.isNaN(date.getTime())) return null;
+    const yyyy = date.getFullYear();
+    const mm = String(date.getMonth() + 1).padStart(2, '0');
+    const dd = String(date.getDate()).padStart(2, '0');
+    const hh = String(date.getHours()).padStart(2, '0');
+    const mi = String(date.getMinutes()).padStart(2, '0');
+    const ss = String(date.getSeconds()).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`;
+};
+
 app.get('/dbdata', async (req, res) => {
     try {
         const { tm, status, callMin, missMin, region, memo, assignedToday } = req.query || {};
@@ -707,15 +747,16 @@ app.patch('/tm/memos/:id', async (req, res) => {
 
 app.post('/tm/leads/:id/update', async (req, res) => {
     const { id } = req.params;
-    const { status, region, memo, tmId, reservationAt, name } = req.body || {};
+    const { status, region, memo, tmId, reservationAt, name, recallAt } = req.body || {};
     if (!tmId) {
         return res.status(400).json({ error: 'tmId is required' });
     }
-    if (status === undefined && region === undefined && !memo && reservationAt === undefined && name === undefined) {
+    if (status === undefined && region === undefined && !memo && reservationAt === undefined && name === undefined && recallAt === undefined) {
         return res.status(400).json({ error: 'no changes provided' });
     }
 
     try {
+        await ensureRecallColumns();
         const [rows] = await pool.query('SELECT 상태 FROM tm_leads WHERE id = ?', [id]);
         const currentStatus = rows[0]?.상태 ?? null;
         const statusChanged = status !== undefined && status !== currentStatus;
@@ -724,6 +765,13 @@ app.post('/tm/leads/:id/update', async (req, res) => {
         const isMissed = nextStatus === '부재중';
         const isNoShow = nextStatus === '예약부도';
         const incCall = statusChanged && (callStatuses.includes(nextStatus) || isNoShow);
+        const normalizedRecallAt = parseLocalDateTimeString(recallAt);
+        if (recallAt !== undefined && recallAt !== null && recallAt !== '' && !normalizedRecallAt) {
+            return res.status(400).json({ error: 'recallAt must be YYYY-MM-DD HH:mm[:ss]' });
+        }
+        if (status === '리콜대기' && !normalizedRecallAt) {
+            return res.status(400).json({ error: '리콜대기에는 recallAt이 필요합니다.' });
+        }
 
         const updates = [];
         const params = [];
@@ -752,6 +800,20 @@ app.post('/tm/leads/:id/update', async (req, res) => {
         if (reservationAt !== undefined) {
             updates.push('예약_내원일시 = ?');
             params.push(reservationAt || null);
+        }
+        if (statusChanged && nextStatus === '리콜대기') {
+            updates.push('리콜_예정일시 = ?');
+            params.push(normalizedRecallAt);
+            updates.push('리콜_완료여부 = 0');
+        } else if (recallAt !== undefined) {
+            updates.push('리콜_예정일시 = ?');
+            params.push(normalizedRecallAt);
+            if (normalizedRecallAt) {
+                updates.push('리콜_완료여부 = 0');
+            }
+        }
+        if (statusChanged && currentStatus === '리콜대기' && nextStatus !== '리콜대기') {
+            updates.push('리콜_완료여부 = 1');
         }
 
         if (updates.length === 0) {
@@ -783,6 +845,37 @@ app.post('/tm/leads/:id/update', async (req, res) => {
     } catch (err) {
         console.error(err);
         res.status(500).json({ error: 'DB query failed' });
+    }
+});
+
+app.get('/tm/recalls', async (req, res) => {
+    const tmId = req.session?.user?.id || req.query?.tmId;
+    const mode = String(req.query?.mode || 'all').toLowerCase();
+    if (!tmId) {
+        return res.status(401).json({ error: 'login required or tmId required' });
+    }
+    if (!['all', 'due', 'upcoming'].includes(mode)) {
+        return res.status(400).json({ error: 'mode must be all, due, or upcoming' });
+    }
+    try {
+        await ensureRecallColumns();
+        const where = ['tm = ?', "TRIM(COALESCE(`상태`, '')) = '리콜대기'", '`리콜_예정일시` IS NOT NULL'];
+        const params = [String(tmId)];
+        if (mode === 'due') where.push('`리콜_예정일시` <= NOW()');
+        if (mode === 'upcoming') where.push('`리콜_예정일시` > NOW()');
+        const [rows] = await pool.query(
+            `
+            SELECT *
+            FROM tm_leads
+            WHERE ${where.join(' AND ')}
+            ORDER BY \`리콜_예정일시\` ASC, id ASC
+            `
+            , params
+        );
+        return res.json(rows || []);
+    } catch (err) {
+        console.error(err);
+        return res.status(500).json({ error: 'DB query failed' });
     }
 });
 
