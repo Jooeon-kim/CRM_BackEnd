@@ -51,6 +51,20 @@ app.get('/', (req, res) => {
     res.send('서버 실행중');
 });
 
+app.get('/version', (req, res) => {
+    const commit =
+        process.env.RAILWAY_GIT_COMMIT_SHA ||
+        process.env.RAILWAY_GIT_COMMIT ||
+        process.env.GITHUB_SHA ||
+        'unknown';
+    return res.json({
+        ok: true,
+        commit,
+        nodeEnv: process.env.NODE_ENV || 'development',
+        startedAt: new Date().toISOString(),
+    });
+});
+
 app.use('/auth', authRouter);
 
 app.listen(3000, () => {
