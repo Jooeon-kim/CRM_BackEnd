@@ -257,7 +257,7 @@ const formatPhone = (value) => {
     return String(value);
 };
 
-const REPORT_METRIC_TYPES = new Set(['MISSED', 'RESERVED', 'VISIT_TODAY', 'VISIT_NEXTDAY', 'FAILED']);
+const REPORT_METRIC_TYPES = new Set(['MISSED', 'RESERVED', 'VISIT_TODAY', 'VISIT_NEXTDAY', 'FAILED', 'RECALL_WAIT']);
 
 const toDateKey = (value) => {
     if (!value) return '';
@@ -1415,11 +1415,29 @@ app.get('/tm/reports/:reportId/full', async (req, res) => {
             RESERVED: [],
             VISIT_TODAY: [],
             VISIT_NEXTDAY: [],
+            RECALL_WAIT: [],
         };
         leadRows.forEach((row) => {
             if (!grouped[row.metric_type]) grouped[row.metric_type] = [];
             grouped[row.metric_type].push(row);
         });
+        const [recallRows] = await pool.query(
+            `
+            SELECT
+                id AS lead_id,
+                이름 AS name_snapshot,
+                연락처 AS phone_snapshot,
+                상태 AS status_snapshot,
+                리콜_예정일시 AS recall_at_snapshot
+            FROM tm_leads
+            WHERE TRIM(COALESCE(tm, '')) = ?
+              AND DATE(콜_날짜시간) = ?
+              AND TRIM(COALESCE(상태, '')) = '리콜대기'
+            ORDER BY 리콜_예정일시 ASC, id DESC
+            `,
+            [String(report.tm_id), report.report_date]
+        );
+        grouped.RECALL_WAIT = recallRows || [];
         return res.json({ report, leads: grouped });
     } catch (err) {
         console.error(err);
@@ -1480,10 +1498,42 @@ app.get('/admin/reports/:reportId/leads', async (req, res) => {
         return res.status(400).json({ error: 'valid reportId is required' });
     }
     if (!REPORT_METRIC_TYPES.has(metric)) {
-        return res.status(400).json({ error: 'metric must be one of MISSED, FAILED, RESERVED, VISIT_TODAY, VISIT_NEXTDAY' });
+        return res.status(400).json({ error: 'metric must be one of MISSED, FAILED, RESERVED, VISIT_TODAY, VISIT_NEXTDAY, RECALL_WAIT' });
     }
 
     try {
+        if (metric === 'RECALL_WAIT') {
+            const [reportRows] = await pool.query(
+                `
+                SELECT id, tm_id, report_date
+                FROM tm_daily_report
+                WHERE id = ?
+                LIMIT 1
+                `,
+                [reportId]
+            );
+            const report = reportRows[0];
+            if (!report) return res.status(404).json({ error: 'report not found' });
+
+            const [recallRows] = await pool.query(
+                `
+                SELECT
+                    id AS lead_id,
+                    이름 AS name_snapshot,
+                    연락처 AS phone_snapshot,
+                    상태 AS status_snapshot,
+                    리콜_예정일시 AS recall_at_snapshot
+                FROM tm_leads
+                WHERE TRIM(COALESCE(tm, '')) = ?
+                  AND DATE(콜_날짜시간) = ?
+                  AND TRIM(COALESCE(상태, '')) = '리콜대기'
+                ORDER BY 리콜_예정일시 ASC, id DESC
+                `,
+                [String(report.tm_id), report.report_date]
+            );
+            return res.json({ reportId: Number(reportId), metric, leads: recallRows || [] });
+        }
+
         const [rows] = await pool.query(
             `
             SELECT
@@ -1552,11 +1602,29 @@ app.get('/admin/reports/:reportId/full', async (req, res) => {
             RESERVED: [],
             VISIT_TODAY: [],
             VISIT_NEXTDAY: [],
+            RECALL_WAIT: [],
         };
         leadRows.forEach((row) => {
             if (!grouped[row.metric_type]) grouped[row.metric_type] = [];
             grouped[row.metric_type].push(row);
         });
+        const [recallRows] = await pool.query(
+            `
+            SELECT
+                id AS lead_id,
+                이름 AS name_snapshot,
+                연락처 AS phone_snapshot,
+                상태 AS status_snapshot,
+                리콜_예정일시 AS recall_at_snapshot
+            FROM tm_leads
+            WHERE TRIM(COALESCE(tm, '')) = ?
+              AND DATE(콜_날짜시간) = ?
+              AND TRIM(COALESCE(상태, '')) = '리콜대기'
+            ORDER BY 리콜_예정일시 ASC, id DESC
+            `,
+            [String(report.tm_id), report.report_date]
+        );
+        grouped.RECALL_WAIT = recallRows || [];
         return res.json({ report, leads: grouped });
     } catch (err) {
         console.error(err);
