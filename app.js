@@ -385,6 +385,26 @@ const getDailySummaryRows = async (conn, tmId, reportDate) => {
         [String(tmId), reportDate]
     );
 
+    const [nextdayReservedRows] = await conn.query(
+        `
+        SELECT
+            l.id,
+            l.\`이름\` AS name,
+            l.\`연락처\` AS phone,
+            l.\`상태\` AS status,
+            COALESCE(l.\`콜횟수\`, 0) AS call_count,
+            l.\`예약_내원일시\` AS reservation_at,
+            m.memo_content AS latest_memo
+        FROM tm_leads l
+        ${latestMemoJoinSql}
+        WHERE l.tm = ?
+          AND TRIM(COALESCE(l.\`상태\`, '')) = '예약'
+          AND DATE(l.\`예약_내원일시\`) = ?
+        ORDER BY l.id DESC
+        `,
+        [String(tmId), nextDay]
+    );
+
     const statusText = (row) => String(row.status || '').trim();
     const statusEq = (row, value) => statusText(row) === value;
     const statusIncludes = (row, value) => statusText(row).includes(value);
@@ -396,7 +416,13 @@ const getDailySummaryRows = async (conn, tmId, reportDate) => {
         (row) => statusIncludes(row, '내원완료') && toDateKey(row.reservation_at) === reportDate
     );
     const visitToday = [...visitTodayReserved, ...visitTodayCompleted];
-    const visitNextday = reserved.filter((row) => toDateKey(row.reservation_at) === nextDay);
+    const visitNextdayByCall = reserved.filter((row) => toDateKey(row.reservation_at) === nextDay);
+    const visitNextdayMap = new Map();
+    [...visitNextdayByCall, ...(nextdayReservedRows || [])].forEach((row) => {
+        if (!row?.id) return;
+        if (!visitNextdayMap.has(row.id)) visitNextdayMap.set(row.id, row);
+    });
+    const visitNextday = Array.from(visitNextdayMap.values());
     const totalCallCount = callRows.reduce((sum, row) => {
         const n = Number(row.call_count);
         return sum + (Number.isNaN(n) ? 0 : Math.max(0, Math.floor(n)));
@@ -941,6 +967,26 @@ app.post('/tm/reports/close', async (req, res) => {
             [normalizedTmId, targetDate]
         );
 
+        const [nextdayReservedRows] = await conn.query(
+            `
+        SELECT
+            l.id,
+            l.\`이름\` AS name,
+            l.\`연락처\` AS phone,
+            l.\`상태\` AS status,
+            COALESCE(l.\`콜횟수\`, 0) AS call_count,
+            l.\`예약_내원일시\` AS reservation_at,
+            m.memo_content AS latest_memo
+        FROM tm_leads l
+            ${latestMemoJoinSql}
+            WHERE l.tm = ?
+              AND TRIM(COALESCE(l.\`상태\`, '')) = '예약'
+              AND DATE(l.\`예약_내원일시\`) = ?
+            ORDER BY l.id DESC
+            `,
+            [normalizedTmId, nextDay]
+        );
+
         const statusText = (row) => String(row.status || '').trim();
         const statusEq = (row, value) => statusText(row) === value;
         const statusIncludes = (row, value) => statusText(row).includes(value);
@@ -952,7 +998,13 @@ app.post('/tm/reports/close', async (req, res) => {
             (row) => statusIncludes(row, '내원완료') && toDateKey(row.reservation_at) === targetDate
         );
         const visitToday = [...visitTodayReserved, ...visitTodayCompleted];
-        const visitNextday = reserved.filter((row) => toDateKey(row.reservation_at) === nextDay);
+        const visitNextdayByCall = reserved.filter((row) => toDateKey(row.reservation_at) === nextDay);
+        const visitNextdayMap = new Map();
+        [...visitNextdayByCall, ...(nextdayReservedRows || [])].forEach((row) => {
+            if (!row?.id) return;
+            if (!visitNextdayMap.has(row.id)) visitNextdayMap.set(row.id, row);
+        });
+        const visitNextday = Array.from(visitNextdayMap.values());
         const totalCallCount = callRows.reduce((sum, row) => {
             const n = Number(row.call_count);
             return sum + (Number.isNaN(n) ? 0 : Math.max(0, Math.floor(n)));
