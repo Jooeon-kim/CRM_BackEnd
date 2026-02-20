@@ -766,7 +766,7 @@ app.post('/tm/leads/:id/update', async (req, res) => {
         const isMissed = nextStatus === '부재중';
         const isNoShow = nextStatus === '예약부도';
         const shouldApplyCallMetrics = statusChanged || isMissed;
-        const incCall = shouldApplyCallMetrics && (callStatuses.includes(nextStatus) || isNoShow);
+        const incCall = shouldApplyCallMetrics && callStatuses.includes(nextStatus);
         const normalizedRecallAt = parseLocalDateTimeString(recallAt);
         if (recallAt !== undefined && recallAt !== null && recallAt !== '' && !normalizedRecallAt) {
             return res.status(400).json({ error: 'recallAt must be YYYY-MM-DD HH:mm[:ss]' });
@@ -1715,7 +1715,7 @@ app.post('/admin/leads/:id/update', async (req, res) => {
         const isMissed = status === '부재중';
         const isNoShow = status === '예약부도';
         const shouldApplyCallMetrics = statusChanged || isMissed;
-        const incCall = shouldApplyCallMetrics && (callStatuses.includes(status) || isNoShow);
+        const incCall = shouldApplyCallMetrics && callStatuses.includes(status);
         if (shouldApplyCallMetrics) {
             updates.push('콜_날짜시간 = NOW()');
             updates.push('콜횟수 = COALESCE(콜횟수, 0) + ?');
