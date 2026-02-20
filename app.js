@@ -602,6 +602,7 @@ app.get('/tm/memos', async (req, res) => {
         const [rows] = await pool.query(
             `
             SELECT
+                m.id,
                 m.memo_time,
                 m.memo_content,
                 m.tm_id,
@@ -646,6 +647,44 @@ app.get('/tm/memos', async (req, res) => {
     } catch (err) {
         console.error(err);
         res.status(500).json({ error: 'DB query failed' });
+    }
+});
+
+app.patch('/tm/memos/:id', async (req, res) => {
+    const { id } = req.params;
+    const { memoContent, tmId } = req.body || {};
+    const sessionTmId = req.session?.user?.id;
+    const editorTmId = tmId || sessionTmId;
+
+    if (!editorTmId) {
+        return res.status(400).json({ error: 'tmId is required' });
+    }
+    if (!memoContent || !String(memoContent).trim()) {
+        return res.status(400).json({ error: 'memoContent is required' });
+    }
+
+    try {
+        const [rows] = await pool.query(
+            'SELECT id, tm_id FROM tm_memos WHERE id = ? LIMIT 1',
+            [id]
+        );
+        const memo = rows[0];
+        if (!memo) {
+            return res.status(404).json({ error: 'Memo not found' });
+        }
+        if (String(memo.tm_id || '') !== String(editorTmId)) {
+            return res.status(403).json({ error: 'Only author can edit this memo' });
+        }
+
+        await pool.query(
+            'UPDATE tm_memos SET memo_content = ? WHERE id = ?',
+            [String(memoContent).trim(), id]
+        );
+
+        return res.json({ ok: true });
+    } catch (err) {
+        console.error(err);
+        return res.status(500).json({ error: 'DB query failed' });
     }
 });
 
