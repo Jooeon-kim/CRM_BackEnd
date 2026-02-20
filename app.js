@@ -759,18 +759,17 @@ app.post('/tm/leads/:id/update', async (req, res) => {
         await ensureRecallColumns();
         const [rows] = await pool.query('SELECT 상태 FROM tm_leads WHERE id = ?', [id]);
         const currentStatus = rows[0]?.상태 ?? null;
-        const statusChanged = status !== undefined && status !== currentStatus;
-        const nextStatus = status !== undefined ? status : currentStatus;
+        const statusProvided = status !== undefined;
+        const statusChanged = statusProvided && status !== currentStatus;
+        const nextStatus = statusProvided ? status : currentStatus;
         const callStatuses = ['부재중', '리콜대기', '예약', '실패'];
         const isMissed = nextStatus === '부재중';
         const isNoShow = nextStatus === '예약부도';
-        const incCall = statusChanged && (callStatuses.includes(nextStatus) || isNoShow);
+        const shouldApplyCallMetrics = statusChanged || isMissed;
+        const incCall = shouldApplyCallMetrics && (callStatuses.includes(nextStatus) || isNoShow);
         const normalizedRecallAt = parseLocalDateTimeString(recallAt);
         if (recallAt !== undefined && recallAt !== null && recallAt !== '' && !normalizedRecallAt) {
             return res.status(400).json({ error: 'recallAt must be YYYY-MM-DD HH:mm[:ss]' });
-        }
-        if (status === '리콜대기' && !normalizedRecallAt) {
-            return res.status(400).json({ error: '리콜대기에는 recallAt이 필요합니다.' });
         }
 
         const updates = [];
@@ -788,7 +787,7 @@ app.post('/tm/leads/:id/update', async (req, res) => {
             updates.push('거주지 = ?');
             params.push(region || null);
         }
-        if (statusChanged) {
+        if (shouldApplyCallMetrics) {
             updates.push('콜_날짜시간 = NOW()');
             updates.push('콜횟수 = COALESCE(콜횟수, 0) + ?');
             params.push(incCall ? 1 : 0);
@@ -1688,7 +1687,7 @@ app.post('/admin/leads/:id/update', async (req, res) => {
         await ensureLeadAssignedDateColumn();
         let currentStatus = null;
         let currentTm = null;
-        if (status) {
+        if (status !== undefined) {
             const [rows] = await pool.query('SELECT 상태 FROM tm_leads WHERE id = ?', [id]);
             currentStatus = rows[0]?.상태 ?? null;
         }
@@ -1696,7 +1695,8 @@ app.post('/admin/leads/:id/update', async (req, res) => {
             const [rows] = await pool.query('SELECT tm FROM tm_leads WHERE id = ?', [id]);
             currentTm = rows[0]?.tm ?? null;
         }
-        const statusChanged = status && status !== currentStatus;
+        const statusProvided = status !== undefined;
+        const statusChanged = statusProvided && status !== currentStatus;
 
         const updates = [];
         const params = [];
@@ -1704,23 +1704,26 @@ app.post('/admin/leads/:id/update', async (req, res) => {
         if (statusChanged) {
             updates.push('상태 = ?');
             params.push(status);
-            updates.push('콜_날짜시간 = NOW()');
             updates.push('예약_내원일시 = ?');
             params.push(reservationAt || null);
+        } else if (reservationAt !== undefined) {
+            updates.push('예약_내원일시 = ?');
+            params.push(reservationAt || null);
+        }
 
-            const callStatuses = ['부재중', '리콜대기', '예약', '실패'];
-            const isMissed = status === '부재중';
-            const isNoShow = status === '예약부도';
-            const incCall = callStatuses.includes(status) || isNoShow;
+        const callStatuses = ['부재중', '리콜대기', '예약', '실패'];
+        const isMissed = status === '부재중';
+        const isNoShow = status === '예약부도';
+        const shouldApplyCallMetrics = statusChanged || isMissed;
+        const incCall = shouldApplyCallMetrics && (callStatuses.includes(status) || isNoShow);
+        if (shouldApplyCallMetrics) {
+            updates.push('콜_날짜시간 = NOW()');
             updates.push('콜횟수 = COALESCE(콜횟수, 0) + ?');
             params.push(incCall ? 1 : 0);
             updates.push('부재중_횟수 = COALESCE(부재중_횟수, 0) + ?');
             params.push(isMissed ? 1 : 0);
             updates.push('예약부도_횟수 = COALESCE(예약부도_횟수, 0) + ?');
             params.push(isNoShow ? 1 : 0);
-        } else if (reservationAt !== undefined) {
-            updates.push('예약_내원일시 = ?');
-            params.push(reservationAt || null);
         }
 
         if (region !== undefined) {
