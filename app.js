@@ -652,40 +652,62 @@ app.get('/tm/memos', async (req, res) => {
 app.post('/tm/leads/:id/update', async (req, res) => {
     const { id } = req.params;
     const { status, region, memo, tmId, reservationAt, name } = req.body || {};
-    if (!status || !tmId) {
-        return res.status(400).json({ error: 'status and tmId are required' });
+    if (!tmId) {
+        return res.status(400).json({ error: 'tmId is required' });
+    }
+    if (status === undefined && region === undefined && !memo && reservationAt === undefined && name === undefined) {
+        return res.status(400).json({ error: 'no changes provided' });
     }
 
     try {
         const [rows] = await pool.query('SELECT 상태 FROM tm_leads WHERE id = ?', [id]);
         const currentStatus = rows[0]?.상태 ?? null;
-        const statusChanged = status !== currentStatus;
+        const statusChanged = status !== undefined && status !== currentStatus;
+        const nextStatus = status !== undefined ? status : currentStatus;
         const callStatuses = ['부재중', '리콜대기', '예약', '실패'];
-        const isMissed = status === '부재중';
-        const isNoShow = status === '예약부도';
-        const incCall = statusChanged && (callStatuses.includes(status) || isNoShow);
+        const isMissed = nextStatus === '부재중';
+        const isNoShow = nextStatus === '예약부도';
+        const incCall = statusChanged && (callStatuses.includes(nextStatus) || isNoShow);
+
+        const updates = [];
+        const params = [];
+
+        if (name !== undefined) {
+            updates.push('이름 = COALESCE(?, 이름)');
+            params.push(name || null);
+        }
+        if (status !== undefined) {
+            updates.push('상태 = ?');
+            params.push(status || null);
+        }
+        if (region !== undefined) {
+            updates.push('거주지 = ?');
+            params.push(region || null);
+        }
+        if (statusChanged) {
+            updates.push('콜_날짜시간 = NOW()');
+            updates.push('콜횟수 = COALESCE(콜횟수, 0) + ?');
+            params.push(incCall ? 1 : 0);
+            updates.push('부재중_횟수 = COALESCE(부재중_횟수, 0) + ?');
+            params.push(isMissed ? 1 : 0);
+            updates.push('예약부도_횟수 = COALESCE(예약부도_횟수, 0) + ?');
+            params.push(isNoShow ? 1 : 0);
+        }
+        if (reservationAt !== undefined) {
+            updates.push('예약_내원일시 = ?');
+            params.push(reservationAt || null);
+        }
+
+        if (updates.length === 0) {
+            return res.json({ ok: true, skipped: true });
+        }
 
         const [result] = await pool.query(
             `UPDATE tm_leads
-             SET
-                이름 = COALESCE(?, 이름),
-                상태 = ?,
-                거주지 = ?,
-                콜_날짜시간 = CASE WHEN ? THEN NOW() ELSE 콜_날짜시간 END,
-                예약_내원일시 = ?,
-                콜횟수 = COALESCE(콜횟수, 0) + ?,
-                부재중_횟수 = COALESCE(부재중_횟수, 0) + ?,
-                예약부도_횟수 = COALESCE(예약부도_횟수, 0) + ?
+             SET ${updates.join(', ')}
              WHERE id = ?`,
             [
-                name === undefined ? null : (name || null),
-                status,
-                region || null,
-                statusChanged ? 1 : 0,
-                reservationAt || null,
-                incCall ? 1 : 0,
-                statusChanged && isMissed ? 1 : 0,
-                statusChanged && isNoShow ? 1 : 0,
+                ...params,
                 id
             ]
         );
