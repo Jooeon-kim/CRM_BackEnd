@@ -392,7 +392,9 @@ const getDailySummaryRows = async (conn, tmId, reportDate) => {
     const failed = callRows.filter((row) => statusEq(row, '실패'));
     const reserved = callRows.filter((row) => statusEq(row, '예약'));
     const visitTodayReserved = reserved.filter((row) => toDateKey(row.reservation_at) === reportDate);
-    const visitTodayCompleted = callRows.filter((row) => statusIncludes(row, '내원완료'));
+    const visitTodayCompleted = callRows.filter(
+        (row) => statusIncludes(row, '내원완료') && toDateKey(row.reservation_at) === reportDate
+    );
     const visitToday = [...visitTodayReserved, ...visitTodayCompleted];
     const visitNextday = reserved.filter((row) => toDateKey(row.reservation_at) === nextDay);
     const totalCallCount = callRows.reduce((sum, row) => {
@@ -946,7 +948,9 @@ app.post('/tm/reports/close', async (req, res) => {
         const failed = callRows.filter((row) => statusEq(row, '실패'));
         const reserved = callRows.filter((row) => statusEq(row, '예약'));
         const visitTodayReserved = reserved.filter((row) => toDateKey(row.reservation_at) === targetDate);
-        const visitTodayCompleted = callRows.filter((row) => statusIncludes(row, '내원완료'));
+        const visitTodayCompleted = callRows.filter(
+            (row) => statusIncludes(row, '내원완료') && toDateKey(row.reservation_at) === targetDate
+        );
         const visitToday = [...visitTodayReserved, ...visitTodayCompleted];
         const visitNextday = reserved.filter((row) => toDateKey(row.reservation_at) === nextDay);
         const totalCallCount = callRows.reduce((sum, row) => {
