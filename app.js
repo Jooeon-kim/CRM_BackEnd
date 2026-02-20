@@ -73,6 +73,19 @@ const describeTable = async (table) => {
     return rows.map((row) => row.Field);
 };
 
+const ensureLeadAssignedDateColumn = async () => {
+    const [rows] = await pool.query(`
+        SELECT COUNT(*) AS cnt
+        FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = 'tm_leads'
+          AND COLUMN_NAME = '배정날짜'
+    `);
+    if (rows[0]?.cnt === 0) {
+        await pool.query('ALTER TABLE tm_leads ADD COLUMN `배정날짜` DATETIME NULL');
+    }
+};
+
 app.get('/dbdata', async (req, res) => {
     try {
         const { tm, status, callMin, missMin, region, memo, assignedToday } = req.query || {};
@@ -540,6 +553,7 @@ app.post('/tm/assign', async (req, res) => {
     }
 
     try {
+        await ensureLeadAssignedDateColumn();
         const columns = await describeTable('tm_leads');
         const idCol = pickColumn(columns, ['id', 'lead_id', 'tm_lead_id']);
         const assignCol = pickColumn(columns, ['tm_id', 'tmid', 'assigned_tm_id', 'assigned_tm', 'tm']);
@@ -550,10 +564,13 @@ app.post('/tm/assign', async (req, res) => {
         }
 
         const setSql = assignedAtCol
-            ? `${assignCol} = ?, ${assignedAtCol} = NOW()`
-            : `${assignCol} = ?`;
+            ? `\`${assignCol}\` = ?, \`${assignedAtCol}\` = NOW()`
+            : `\`${assignCol}\` = ?`;
         const [result] = await pool.query(
-            `UPDATE tm_leads SET ${setSql} WHERE ${idCol} = ? AND (${assignCol} IS NULL OR ${assignCol} = 0 OR ${assignCol} = '')`,
+            `UPDATE tm_leads
+             SET ${setSql}
+             WHERE \`${idCol}\` = ?
+               AND (\`${assignCol}\` IS NULL OR \`${assignCol}\` = 0 OR \`${assignCol}\` = '')`,
             [tmId, leadId]
         );
 
@@ -1575,6 +1592,7 @@ app.post('/admin/leads/:id/update', async (req, res) => {
     }
 
     try {
+        await ensureLeadAssignedDateColumn();
         let currentStatus = null;
         let currentTm = null;
         if (status) {
