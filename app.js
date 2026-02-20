@@ -371,11 +371,15 @@ const getDailySummaryRows = async (conn, tmId, reportDate) => {
         [String(tmId), reportDate]
     );
 
-    const statusEq = (row, value) => String(row.status || '').trim() === value;
+    const statusText = (row) => String(row.status || '').trim();
+    const statusEq = (row, value) => statusText(row) === value;
+    const statusIncludes = (row, value) => statusText(row).includes(value);
     const missed = callRows.filter((row) => statusEq(row, '부재중'));
     const failed = callRows.filter((row) => statusEq(row, '실패'));
     const reserved = callRows.filter((row) => statusEq(row, '예약'));
-    const visitToday = reserved.filter((row) => toDateKey(row.reservation_at) === reportDate);
+    const visitTodayReserved = reserved.filter((row) => toDateKey(row.reservation_at) === reportDate);
+    const visitTodayCompleted = callRows.filter((row) => statusIncludes(row, '내원완료'));
+    const visitToday = [...visitTodayReserved, ...visitTodayCompleted];
     const visitNextday = reserved.filter((row) => toDateKey(row.reservation_at) === nextDay);
     const totalCallCount = callRows.reduce((sum, row) => {
         const n = Number(row.call_count);
@@ -796,9 +800,12 @@ app.post('/tm/leads/:id/update', async (req, res) => {
             updates.push('예약부도_횟수 = COALESCE(예약부도_횟수, 0) + ?');
             params.push(isNoShow ? 1 : 0);
         }
-        if (reservationAt !== undefined) {
+        const shouldUpdateReservationAt =
+            reservationAt !== undefined &&
+            (reservationAt !== null && String(reservationAt).trim() !== '');
+        if (shouldUpdateReservationAt) {
             updates.push('예약_내원일시 = ?');
-            params.push(reservationAt || null);
+            params.push(reservationAt);
         }
         if (statusChanged && nextStatus === '리콜대기') {
             updates.push('리콜_예정일시 = ?');
@@ -918,11 +925,15 @@ app.post('/tm/reports/close', async (req, res) => {
             [normalizedTmId, targetDate]
         );
 
-        const statusEq = (row, value) => String(row.status || '').trim() === value;
+        const statusText = (row) => String(row.status || '').trim();
+        const statusEq = (row, value) => statusText(row) === value;
+        const statusIncludes = (row, value) => statusText(row).includes(value);
         const missed = callRows.filter((row) => statusEq(row, '부재중'));
         const failed = callRows.filter((row) => statusEq(row, '실패'));
         const reserved = callRows.filter((row) => statusEq(row, '예약'));
-        const visitToday = reserved.filter((row) => toDateKey(row.reservation_at) === targetDate);
+        const visitTodayReserved = reserved.filter((row) => toDateKey(row.reservation_at) === targetDate);
+        const visitTodayCompleted = callRows.filter((row) => statusIncludes(row, '내원완료'));
+        const visitToday = [...visitTodayReserved, ...visitTodayCompleted];
         const visitNextday = reserved.filter((row) => toDateKey(row.reservation_at) === nextDay);
         const totalCallCount = callRows.reduce((sum, row) => {
             const n = Number(row.call_count);
@@ -1769,14 +1780,20 @@ app.post('/admin/leads/:id/update', async (req, res) => {
         const updates = [];
         const params = [];
 
+        const shouldUpdateReservationAt =
+            reservationAt !== undefined &&
+            (reservationAt !== null && String(reservationAt).trim() !== '');
+
         if (statusChanged) {
             updates.push('상태 = ?');
             params.push(status);
+            if (shouldUpdateReservationAt) {
+                updates.push('예약_내원일시 = ?');
+                params.push(reservationAt);
+            }
+        } else if (shouldUpdateReservationAt) {
             updates.push('예약_내원일시 = ?');
-            params.push(reservationAt || null);
-        } else if (reservationAt !== undefined) {
-            updates.push('예약_내원일시 = ?');
-            params.push(reservationAt || null);
+            params.push(reservationAt);
         }
 
         const callStatuses = ['부재중', '리콜대기', '예약', '실패'];
