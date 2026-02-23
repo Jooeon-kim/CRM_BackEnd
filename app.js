@@ -142,11 +142,37 @@ const ensureTmScheduleSchema = async () => {
                         updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                         PRIMARY KEY (id),
                         KEY idx_tm_schedule_date (schedule_date, tm_id),
-                        KEY idx_tm_schedule_tm_id (tm_id),
-                        CONSTRAINT fk_tm_schedule_tm FOREIGN KEY (tm_id) REFERENCES tm(id) ON DELETE RESTRICT ON UPDATE CASCADE,
-                        CONSTRAINT fk_tm_schedule_creator FOREIGN KEY (created_by) REFERENCES tm(id) ON DELETE SET NULL ON UPDATE CASCADE
+                        KEY idx_tm_schedule_tm_id (tm_id)
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
                 `);
+            } else {
+                const [columns] = await pool.query(`
+                    SELECT COLUMN_NAME
+                    FROM INFORMATION_SCHEMA.COLUMNS
+                    WHERE TABLE_SCHEMA = DATABASE()
+                      AND TABLE_NAME = 'tm_schedule'
+                `);
+                const has = new Set((columns || []).map((row) => row.COLUMN_NAME));
+                const alterParts = [];
+                if (!has.has('tm_id')) alterParts.push('ADD COLUMN tm_id BIGINT NOT NULL');
+                if (!has.has('schedule_date')) alterParts.push('ADD COLUMN schedule_date DATE NOT NULL');
+                if (!has.has('schedule_type')) alterParts.push('ADD COLUMN schedule_type VARCHAR(30) NOT NULL');
+                if (!has.has('custom_type')) alterParts.push('ADD COLUMN custom_type VARCHAR(100) DEFAULT NULL');
+                if (!has.has('memo')) alterParts.push('ADD COLUMN memo TEXT');
+                if (!has.has('created_by')) alterParts.push('ADD COLUMN created_by BIGINT DEFAULT NULL');
+                if (!has.has('created_at')) alterParts.push('ADD COLUMN created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP');
+                if (!has.has('updated_at')) alterParts.push('ADD COLUMN updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP');
+                if (alterParts.length > 0) {
+                    await pool.query(`ALTER TABLE tm_schedule ${alterParts.join(', ')}`);
+                }
+                const [indexes] = await pool.query(`SHOW INDEX FROM tm_schedule`);
+                const indexNames = new Set((indexes || []).map((row) => row.Key_name));
+                if (!indexNames.has('idx_tm_schedule_date')) {
+                    await pool.query('ALTER TABLE tm_schedule ADD INDEX idx_tm_schedule_date (schedule_date, tm_id)');
+                }
+                if (!indexNames.has('idx_tm_schedule_tm_id')) {
+                    await pool.query('ALTER TABLE tm_schedule ADD INDEX idx_tm_schedule_tm_id (tm_id)');
+                }
             }
         })().finally(() => {
             ensureTmScheduleSchemaPromise = null;
@@ -708,7 +734,7 @@ app.get('/tm/schedules', async (req, res) => {
         return res.json(rows);
     } catch (err) {
         console.error(err);
-        return res.status(500).json({ error: 'DB query failed' });
+        return res.status(500).json({ error: 'DB query failed', detail: err.message });
     }
 });
 
@@ -769,7 +795,7 @@ app.post('/tm/schedules', async (req, res) => {
         return res.json({ ok: true, id: result.insertId });
     } catch (err) {
         console.error(err);
-        return res.status(500).json({ error: 'DB query failed' });
+        return res.status(500).json({ error: 'DB query failed', detail: err.message });
     }
 });
 
