@@ -885,10 +885,6 @@ app.get('/company/schedules', async (req, res) => {
 
 app.post('/company/schedules', async (req, res) => {
     const { startDate, endDate, content } = req.body || {};
-    const isAdmin = await ensureAdminRequest(req);
-    if (!isAdmin) {
-        return res.status(403).json({ error: 'Admin only' });
-    }
     if (!startDate || !endDate || !String(content || '').trim()) {
         return res.status(400).json({ error: 'startDate, endDate, content are required' });
     }
@@ -917,10 +913,6 @@ app.post('/company/schedules', async (req, res) => {
 });
 
 app.patch('/company/schedules/:id', async (req, res) => {
-    const isAdmin = await ensureAdminRequest(req);
-    if (!isAdmin) {
-        return res.status(403).json({ error: 'Admin only' });
-    }
     const { id } = req.params;
     const { startDate, endDate, content } = req.body || {};
     try {
@@ -964,10 +956,6 @@ app.patch('/company/schedules/:id', async (req, res) => {
 });
 
 app.delete('/company/schedules/:id', async (req, res) => {
-    const isAdmin = await ensureAdminRequest(req);
-    if (!isAdmin) {
-        return res.status(403).json({ error: 'Admin only' });
-    }
     const { id } = req.params;
     try {
         await ensureCompanyScheduleSchema();
