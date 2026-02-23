@@ -181,6 +181,37 @@ const ensureTmScheduleSchema = async () => {
     return ensureTmScheduleSchemaPromise;
 };
 
+let ensureCompanyScheduleSchemaPromise = null;
+const ensureCompanyScheduleSchema = async () => {
+    if (!ensureCompanyScheduleSchemaPromise) {
+        ensureCompanyScheduleSchemaPromise = (async () => {
+            const [tables] = await pool.query(`
+                SELECT COUNT(*) AS cnt
+                FROM INFORMATION_SCHEMA.TABLES
+                WHERE TABLE_SCHEMA = DATABASE()
+                  AND TABLE_NAME = 'company_schedule'
+            `);
+            if (tables[0]?.cnt === 0) {
+                await pool.query(`
+                    CREATE TABLE company_schedule (
+                        id BIGINT NOT NULL AUTO_INCREMENT,
+                        start_date DATE NOT NULL,
+                        end_date DATE NOT NULL,
+                        content VARCHAR(255) NOT NULL,
+                        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                        PRIMARY KEY (id),
+                        KEY idx_company_schedule_range (start_date, end_date)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+                `);
+            }
+        })().finally(() => {
+            ensureCompanyScheduleSchemaPromise = null;
+        });
+    }
+    return ensureCompanyScheduleSchemaPromise;
+};
+
 const parseLocalDateTimeString = (value) => {
     if (value === undefined || value === null || value === '') return null;
     const raw = String(value).trim().replace('T', ' ');
@@ -793,6 +824,130 @@ app.post('/tm/schedules', async (req, res) => {
             ]
         );
         return res.json({ ok: true, id: result.insertId });
+    } catch (err) {
+        console.error(err);
+        return res.status(500).json({ error: 'DB query failed', detail: err.message });
+    }
+});
+
+app.get('/company/schedules', async (req, res) => {
+    const { from, to } = req.query || {};
+    try {
+        await ensureCompanyScheduleSchema();
+        const where = [];
+        const params = [];
+        if (from) {
+            where.push('end_date >= ?');
+            params.push(String(from).trim());
+        }
+        if (to) {
+            where.push('start_date <= ?');
+            params.push(String(to).trim());
+        }
+        const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+        const [rows] = await pool.query(
+            `
+            SELECT id, start_date, end_date, content, created_at, updated_at
+            FROM company_schedule
+            ${whereSql}
+            ORDER BY start_date ASC, end_date ASC, id ASC
+            `,
+            params
+        );
+        return res.json(rows);
+    } catch (err) {
+        console.error(err);
+        return res.status(500).json({ error: 'DB query failed', detail: err.message });
+    }
+});
+
+app.post('/company/schedules', async (req, res) => {
+    const { startDate, endDate, content } = req.body || {};
+    if (!req.session?.isAdmin) {
+        return res.status(403).json({ error: 'Admin only' });
+    }
+    if (!startDate || !endDate || !String(content || '').trim()) {
+        return res.status(400).json({ error: 'startDate, endDate, content are required' });
+    }
+    const start = String(startDate).trim();
+    const end = String(endDate).trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(start) || !/^\d{4}-\d{2}-\d{2}$/.test(end)) {
+        return res.status(400).json({ error: 'startDate/endDate must be YYYY-MM-DD' });
+    }
+    if (end < start) {
+        return res.status(400).json({ error: 'endDate must be greater than or equal to startDate' });
+    }
+    try {
+        await ensureCompanyScheduleSchema();
+        const [result] = await pool.query(
+            `
+            INSERT INTO company_schedule (start_date, end_date, content)
+            VALUES (?, ?, ?)
+            `,
+            [start, end, String(content).trim()]
+        );
+        return res.json({ ok: true, id: result.insertId });
+    } catch (err) {
+        console.error(err);
+        return res.status(500).json({ error: 'DB query failed', detail: err.message });
+    }
+});
+
+app.patch('/company/schedules/:id', async (req, res) => {
+    if (!req.session?.isAdmin) {
+        return res.status(403).json({ error: 'Admin only' });
+    }
+    const { id } = req.params;
+    const { startDate, endDate, content } = req.body || {};
+    try {
+        await ensureCompanyScheduleSchema();
+        const [rows] = await pool.query(
+            'SELECT id, start_date, end_date, content FROM company_schedule WHERE id = ? LIMIT 1',
+            [id]
+        );
+        const current = rows[0];
+        if (!current) {
+            return res.status(404).json({ error: 'Schedule not found' });
+        }
+
+        const nextStart = startDate !== undefined ? String(startDate || '').trim() : String(current.start_date || '').slice(0, 10);
+        const nextEnd = endDate !== undefined ? String(endDate || '').trim() : String(current.end_date || '').slice(0, 10);
+        const nextContent = content !== undefined ? String(content || '').trim() : String(current.content || '');
+
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(nextStart) || !/^\d{4}-\d{2}-\d{2}$/.test(nextEnd)) {
+            return res.status(400).json({ error: 'startDate/endDate must be YYYY-MM-DD' });
+        }
+        if (nextEnd < nextStart) {
+            return res.status(400).json({ error: 'endDate must be greater than or equal to startDate' });
+        }
+        if (!nextContent) {
+            return res.status(400).json({ error: 'content is required' });
+        }
+
+        await pool.query(
+            `
+            UPDATE company_schedule
+            SET start_date = ?, end_date = ?, content = ?
+            WHERE id = ?
+            `,
+            [nextStart, nextEnd, nextContent, id]
+        );
+        return res.json({ ok: true });
+    } catch (err) {
+        console.error(err);
+        return res.status(500).json({ error: 'DB query failed', detail: err.message });
+    }
+});
+
+app.delete('/company/schedules/:id', async (req, res) => {
+    if (!req.session?.isAdmin) {
+        return res.status(403).json({ error: 'Admin only' });
+    }
+    const { id } = req.params;
+    try {
+        await ensureCompanyScheduleSchema();
+        await pool.query('DELETE FROM company_schedule WHERE id = ?', [id]);
+        return res.json({ ok: true });
     } catch (err) {
         console.error(err);
         return res.status(500).json({ error: 'DB query failed', detail: err.message });
