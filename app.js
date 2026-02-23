@@ -799,6 +799,128 @@ app.post('/tm/schedules', async (req, res) => {
     }
 });
 
+app.patch('/tm/schedules/:id', async (req, res) => {
+    const { id } = req.params;
+    const {
+        tmId,
+        scheduleDate,
+        scheduleType,
+        customType,
+        memo,
+    } = req.body || {};
+    const sessionUser = req.session?.user || null;
+    const sessionTmId = sessionUser?.id ? Number(sessionUser.id) : null;
+    const isAdmin = Boolean(req.session?.isAdmin);
+
+    try {
+        await ensureTmScheduleSchema();
+        const [rows] = await pool.query(
+            'SELECT id, tm_id FROM tm_schedule WHERE id = ? LIMIT 1',
+            [id]
+        );
+        const current = rows[0];
+        if (!current) {
+            return res.status(404).json({ error: 'Schedule not found' });
+        }
+        if (!isAdmin && String(current.tm_id || '') !== String(sessionTmId || '')) {
+            return res.status(403).json({ error: 'Only owner can edit this schedule' });
+        }
+
+        const setParts = [];
+        const params = [];
+
+        if (tmId !== undefined && tmId !== null && tmId !== '') {
+            if (!isAdmin) {
+                return res.status(403).json({ error: 'Only admin can change tmId' });
+            }
+            const nextTmId = Number(tmId);
+            if (Number.isNaN(nextTmId) || nextTmId <= 0) {
+                return res.status(400).json({ error: 'invalid tmId' });
+            }
+            setParts.push('tm_id = ?');
+            params.push(nextTmId);
+        }
+
+        if (scheduleDate !== undefined) {
+            const dateRaw = String(scheduleDate || '').trim();
+            const dateMatch = dateRaw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+            if (!dateMatch) {
+                return res.status(400).json({ error: 'scheduleDate must be YYYY-MM-DD' });
+            }
+            setParts.push('schedule_date = ?');
+            params.push(dateRaw);
+        }
+
+        if (scheduleType !== undefined) {
+            const type = String(scheduleType || '').trim();
+            const allowedTypes = new Set(['휴무', '근무', '반차', '교육', '기타']);
+            if (!allowedTypes.has(type)) {
+                return res.status(400).json({ error: 'invalid scheduleType' });
+            }
+            setParts.push('schedule_type = ?');
+            params.push(type);
+
+            const trimmedCustom = customType ? String(customType).trim() : '';
+            const normalizedCustom = type === '기타' ? trimmedCustom : '';
+            if (type === '기타' && !normalizedCustom) {
+                return res.status(400).json({ error: 'customType is required when scheduleType is 기타' });
+            }
+            setParts.push('custom_type = ?');
+            params.push(normalizedCustom || null);
+        } else if (customType !== undefined) {
+            const trimmedCustom = customType ? String(customType).trim() : '';
+            setParts.push('custom_type = ?');
+            params.push(trimmedCustom || null);
+        }
+
+        if (memo !== undefined) {
+            const nextMemo = String(memo || '').trim();
+            setParts.push('memo = ?');
+            params.push(nextMemo || null);
+        }
+
+        if (setParts.length === 0) {
+            return res.status(400).json({ error: 'No fields to update' });
+        }
+
+        params.push(id);
+        await pool.query(
+            `UPDATE tm_schedule SET ${setParts.join(', ')} WHERE id = ?`,
+            params
+        );
+        return res.json({ ok: true });
+    } catch (err) {
+        console.error(err);
+        return res.status(500).json({ error: 'DB query failed', detail: err.message });
+    }
+});
+
+app.delete('/tm/schedules/:id', async (req, res) => {
+    const { id } = req.params;
+    const sessionUser = req.session?.user || null;
+    const sessionTmId = sessionUser?.id ? Number(sessionUser.id) : null;
+    const isAdmin = Boolean(req.session?.isAdmin);
+    try {
+        await ensureTmScheduleSchema();
+        const [rows] = await pool.query(
+            'SELECT id, tm_id FROM tm_schedule WHERE id = ? LIMIT 1',
+            [id]
+        );
+        const current = rows[0];
+        if (!current) {
+            return res.status(404).json({ error: 'Schedule not found' });
+        }
+        if (!isAdmin && String(current.tm_id || '') !== String(sessionTmId || '')) {
+            return res.status(403).json({ error: 'Only owner can delete this schedule' });
+        }
+        await pool.query('DELETE FROM tm_schedule WHERE id = ?', [id]);
+        return res.json({ ok: true });
+    } catch (err) {
+        console.error(err);
+        return res.status(500).json({ error: 'DB query failed', detail: err.message });
+    }
+});
+
 app.post('/tm/assign', async (req, res) => {
     const { leadId, tmId } = req.body || {};
     if (!leadId || tmId === undefined || tmId === null || tmId === '') {
