@@ -373,6 +373,34 @@ const formatDateTime = (value) => {
     return `${yyyy}-${mm}-${dd} ${hh}:${min}`;
 };
 
+const formatUtcAsKstDateTime = (value) => {
+    if (!value) return '';
+    const raw = String(value).trim();
+    const plain = raw.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?$/);
+    let utcDate = null;
+    if (plain) {
+        utcDate = new Date(Date.UTC(
+            Number(plain[1]),
+            Number(plain[2]) - 1,
+            Number(plain[3]),
+            Number(plain[4]),
+            Number(plain[5]),
+            Number(plain[6] || '0')
+        ));
+    } else {
+        const parsed = new Date(raw);
+        if (!Number.isNaN(parsed.getTime())) utcDate = parsed;
+    }
+    if (!utcDate || Number.isNaN(utcDate.getTime())) return String(value);
+    const kst = new Date(utcDate.getTime() + 9 * 60 * 60 * 1000);
+    const yyyy = kst.getUTCFullYear();
+    const mm = String(kst.getUTCMonth() + 1).padStart(2, '0');
+    const dd = String(kst.getUTCDate()).padStart(2, '0');
+    const hh = String(kst.getUTCHours()).padStart(2, '0');
+    const min = String(kst.getUTCMinutes()).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd} ${hh}:${min}`;
+};
+
 const formatPhone = (value) => {
     if (!value) return '';
     let digits = String(value).replace(/\D/g, '');
@@ -2659,6 +2687,7 @@ app.get('/dbdata/export', async (req, res) => {
         const sheet = workbook.addWorksheet('DB목록');
         const visibleColumns = [
             '인입날짜',
+            '배정날짜',
             '이름',
             '연락처',
             '이벤트',
@@ -2684,8 +2713,12 @@ app.get('/dbdata/export', async (req, res) => {
                     formatted[key] = row.tm_name || row[key] || '';
                     return;
                 }
-                if (key === '인입날짜' || key === '콜_날짜시간' || key === '예약_내원일시' || key === '최근메모시간') {
+                if (key === '예약_내원일시') {
                     formatted[key] = row[key] ? formatDateTime(row[key]) : '';
+                    return;
+                }
+                if (key === '인입날짜' || key === '배정날짜' || key === '콜_날짜시간' || key === '최근메모시간') {
+                    formatted[key] = row[key] ? formatUtcAsKstDateTime(row[key]) : '';
                     return;
                 }
                 formatted[key] = row[key] ?? '';
