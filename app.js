@@ -1825,6 +1825,48 @@ app.post('/admin/sync-meta-leads', async (req, res) => {
     }
 });
 
+app.post('/admin/leads', async (req, res) => {
+    const { name, phone, event, tmId } = req.body || {};
+    const normalizedName = String(name || '').trim();
+    const normalizedPhone = String(phone || '').trim();
+    const normalizedEvent = String(event || '').trim();
+
+    if (!normalizedName || !normalizedPhone || !normalizedEvent) {
+        return res.status(400).json({ error: 'name, phone, event are required' });
+    }
+
+    try {
+        await ensureLeadAssignedDateColumn();
+        const normalizedTm = (tmId === undefined || tmId === null || String(tmId).trim() === '')
+            ? null
+            : String(tmId).trim();
+        const hasTm = normalizedTm !== null;
+
+        const [result] = await pool.query(
+            `
+            INSERT INTO tm_leads (
+                \`인입날짜\`,
+                \`이름\`,
+                \`연락처\`,
+                \`이벤트\`,
+                \`tm\`,
+                \`배정날짜\`
+            ) VALUES (
+                NOW(),
+                ?, ?, ?, ?,
+                ${hasTm ? 'NOW()' : 'NULL'}
+            )
+            `,
+            [normalizedName, normalizedPhone, normalizedEvent, normalizedTm]
+        );
+
+        return res.json({ ok: true, id: result.insertId });
+    } catch (err) {
+        console.error(err);
+        return res.status(500).json({ error: 'Create lead failed' });
+    }
+});
+
 app.post('/admin/leads/:id/update', async (req, res) => {
     const { id } = req.params;
     const { status, region, memo, tmId, reservationAt, name } = req.body || {};
