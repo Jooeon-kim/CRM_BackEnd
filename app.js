@@ -187,7 +187,8 @@ app.get('/dbdata', async (req, res) => {
             params.push(`%${memo}%`);
         }
         if (assignedToday && map.assignedDate) {
-            where.push(`DATE(l.\`${map.assignedDate}\`) = CURDATE()`);
+            // `배정날짜` is stored in UTC. Compare by KST calendar date.
+            where.push(`DATE(DATE_ADD(l.\`${map.assignedDate}\`, INTERVAL 9 HOUR)) = DATE(DATE_ADD(UTC_TIMESTAMP(), INTERVAL 9 HOUR))`);
         }
 
         const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
