@@ -118,6 +118,43 @@ const ensureRecallColumns = async () => {
     }
 };
 
+let ensureTmScheduleSchemaPromise = null;
+const ensureTmScheduleSchema = async () => {
+    if (!ensureTmScheduleSchemaPromise) {
+        ensureTmScheduleSchemaPromise = (async () => {
+            const [tables] = await pool.query(`
+                SELECT COUNT(*) AS cnt
+                FROM INFORMATION_SCHEMA.TABLES
+                WHERE TABLE_SCHEMA = DATABASE()
+                  AND TABLE_NAME = 'tm_schedule'
+            `);
+            if (tables[0]?.cnt === 0) {
+                await pool.query(`
+                    CREATE TABLE tm_schedule (
+                        id BIGINT NOT NULL AUTO_INCREMENT,
+                        tm_id BIGINT NOT NULL,
+                        schedule_date DATE NOT NULL,
+                        schedule_type VARCHAR(30) NOT NULL,
+                        custom_type VARCHAR(100) DEFAULT NULL,
+                        memo TEXT,
+                        created_by BIGINT DEFAULT NULL,
+                        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                        PRIMARY KEY (id),
+                        KEY idx_tm_schedule_date (schedule_date, tm_id),
+                        KEY idx_tm_schedule_tm_id (tm_id),
+                        CONSTRAINT fk_tm_schedule_tm FOREIGN KEY (tm_id) REFERENCES tm(id) ON DELETE RESTRICT ON UPDATE CASCADE,
+                        CONSTRAINT fk_tm_schedule_creator FOREIGN KEY (created_by) REFERENCES tm(id) ON DELETE SET NULL ON UPDATE CASCADE
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+                `);
+            }
+        })().finally(() => {
+            ensureTmScheduleSchemaPromise = null;
+        });
+    }
+    return ensureTmScheduleSchemaPromise;
+};
+
 const parseLocalDateTimeString = (value) => {
     if (value === undefined || value === null || value === '') return null;
     const raw = String(value).trim().replace('T', ' ');
@@ -630,6 +667,109 @@ app.patch('/tm/agents/:id', async (req, res) => {
     } catch (err) {
         console.error(err);
         res.status(500).json({ error: 'DB query failed' });
+    }
+});
+
+app.get('/tm/schedules', async (req, res) => {
+    const { from, to } = req.query || {};
+    try {
+        await ensureTmScheduleSchema();
+        const where = [];
+        const params = [];
+        if (from) {
+            where.push('s.schedule_date >= ?');
+            params.push(from);
+        }
+        if (to) {
+            where.push('s.schedule_date <= ?');
+            params.push(to);
+        }
+        const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+        const [rows] = await pool.query(
+            `
+            SELECT
+                s.id,
+                s.tm_id,
+                s.schedule_date,
+                s.schedule_type,
+                s.custom_type,
+                s.memo,
+                s.created_by,
+                s.created_at,
+                s.updated_at,
+                t.name AS tm_name
+            FROM tm_schedule s
+            LEFT JOIN tm t ON t.id = s.tm_id
+            ${whereSql}
+            ORDER BY s.schedule_date ASC, s.id ASC
+            `,
+            params
+        );
+        return res.json(rows);
+    } catch (err) {
+        console.error(err);
+        return res.status(500).json({ error: 'DB query failed' });
+    }
+});
+
+app.post('/tm/schedules', async (req, res) => {
+    const {
+        tmId,
+        scheduleDate,
+        scheduleType,
+        customType,
+        memo,
+    } = req.body || {};
+    const sessionUser = req.session?.user || null;
+    const sessionTmId = sessionUser?.id ? Number(sessionUser.id) : null;
+    const isAdmin = Boolean(req.session?.isAdmin);
+    const requestedTmId = Number(tmId);
+    const targetTmId = isAdmin
+        ? (Number.isNaN(requestedTmId) ? null : requestedTmId)
+        : (sessionTmId || (Number.isNaN(requestedTmId) ? null : requestedTmId));
+
+    if (!targetTmId || !scheduleDate || !scheduleType) {
+        return res.status(400).json({ error: 'tmId, scheduleDate, scheduleType are required' });
+    }
+
+    const type = String(scheduleType).trim();
+    const allowedTypes = new Set(['휴무', '근무', '반차', '교육', '기타']);
+    if (!allowedTypes.has(type)) {
+        return res.status(400).json({ error: 'invalid scheduleType' });
+    }
+
+    const dateMatch = String(scheduleDate).trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!dateMatch) {
+        return res.status(400).json({ error: 'scheduleDate must be YYYY-MM-DD' });
+    }
+
+    const trimmedCustom = customType ? String(customType).trim() : '';
+    const normalizedCustom = type === '기타' ? trimmedCustom : '';
+    if (type === '기타' && !normalizedCustom) {
+        return res.status(400).json({ error: 'customType is required when scheduleType is 기타' });
+    }
+
+    try {
+        await ensureTmScheduleSchema();
+        const [result] = await pool.query(
+            `
+            INSERT INTO tm_schedule (
+                tm_id, schedule_date, schedule_type, custom_type, memo, created_by
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            `,
+            [
+                targetTmId,
+                String(scheduleDate).trim(),
+                type,
+                normalizedCustom || null,
+                memo ? String(memo).trim() : null,
+                sessionTmId || null,
+            ]
+        );
+        return res.json({ ok: true, id: result.insertId });
+    } catch (err) {
+        console.error(err);
+        return res.status(500).json({ error: 'DB query failed' });
     }
 });
 
