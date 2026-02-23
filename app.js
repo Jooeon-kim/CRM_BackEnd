@@ -2700,7 +2700,11 @@ app.get('/dbdata/export', async (req, res) => {
             '최근메모시간',
             '콜횟수',
         ];
-        sheet.columns = visibleColumns.map((key) => ({ header: key, key, width: 18 }));
+        sheet.columns = visibleColumns.map((key) => ({
+            header: key,
+            key,
+            width: key === '최근메모내용' ? 60 : 18
+        }));
 
         rows.forEach((row) => {
             const formatted = {};
