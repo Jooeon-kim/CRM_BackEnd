@@ -234,6 +234,28 @@ const parseLocalDateTimeString = (value) => {
     return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`;
 };
 
+const ensureAdminRequest = async (req) => {
+    const sessionUserId = Number(req.session?.user?.id || 0);
+    if (!sessionUserId) return false;
+
+    if (Boolean(req.session?.isAdmin)) return true;
+
+    try {
+        const [rows] = await pool.query(
+            'SELECT id FROM tm WHERE id = ? AND isAdmin = 1 LIMIT 1',
+            [sessionUserId]
+        );
+        const isAdmin = rows.length > 0;
+        if (isAdmin) {
+            req.session.isAdmin = true;
+        }
+        return isAdmin;
+    } catch (err) {
+        console.error(err);
+        return false;
+    }
+};
+
 app.get('/dbdata', async (req, res) => {
     try {
         const { tm, status, callMin, missMin, region, memo, assignedToday } = req.query || {};
@@ -863,7 +885,8 @@ app.get('/company/schedules', async (req, res) => {
 
 app.post('/company/schedules', async (req, res) => {
     const { startDate, endDate, content } = req.body || {};
-    if (!req.session?.isAdmin) {
+    const isAdmin = await ensureAdminRequest(req);
+    if (!isAdmin) {
         return res.status(403).json({ error: 'Admin only' });
     }
     if (!startDate || !endDate || !String(content || '').trim()) {
@@ -894,7 +917,8 @@ app.post('/company/schedules', async (req, res) => {
 });
 
 app.patch('/company/schedules/:id', async (req, res) => {
-    if (!req.session?.isAdmin) {
+    const isAdmin = await ensureAdminRequest(req);
+    if (!isAdmin) {
         return res.status(403).json({ error: 'Admin only' });
     }
     const { id } = req.params;
@@ -940,7 +964,8 @@ app.patch('/company/schedules/:id', async (req, res) => {
 });
 
 app.delete('/company/schedules/:id', async (req, res) => {
-    if (!req.session?.isAdmin) {
+    const isAdmin = await ensureAdminRequest(req);
+    if (!isAdmin) {
         return res.status(403).json({ error: 'Admin only' });
     }
     const { id } = req.params;
