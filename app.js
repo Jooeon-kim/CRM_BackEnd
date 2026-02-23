@@ -2575,7 +2575,7 @@ app.get('/tm/leads/export', async (req, res) => {
 
 app.get('/dbdata/export', async (req, res) => {
     try {
-        const { tm, status, callMin, missMin, region, memo } = req.query || {};
+        const { tm, status, callMin, missMin, region, memo, event, name, phone, assignedTodayOnly } = req.query || {};
         const where = [];
         const params = [];
 
@@ -2586,6 +2586,21 @@ app.get('/dbdata/export', async (req, res) => {
         if (status && status !== 'all') {
             where.push('l.`상태` LIKE ?');
             params.push(`%${status}%`);
+        }
+        if (name) {
+            where.push('l.`이름` LIKE ?');
+            params.push(`%${name}%`);
+        }
+        if (phone) {
+            const normalizedPhone = String(phone).replace(/\D/g, '');
+            if (normalizedPhone) {
+                where.push('REPLACE(REPLACE(REPLACE(COALESCE(l.`연락처`, \'\'), \'-\', \'\'), \' \', \'\'), \'+\', \'\') LIKE ?');
+                params.push(`%${normalizedPhone}%`);
+            }
+        }
+        if (event) {
+            where.push('l.`이벤트` = ?');
+            params.push(event);
         }
         if (callMin !== undefined && callMin !== '') {
             const min = Number(callMin);
@@ -2608,6 +2623,9 @@ app.get('/dbdata/export', async (req, res) => {
         if (memo) {
             where.push('m.memo_content LIKE ?');
             params.push(`%${memo}%`);
+        }
+        if (assignedTodayOnly === '1' || assignedTodayOnly === 'true') {
+            where.push('DATE(DATE_ADD(l.`배정날짜`, INTERVAL 9 HOUR)) = DATE(DATE_ADD(UTC_TIMESTAMP(), INTERVAL 9 HOUR))');
         }
 
         const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
