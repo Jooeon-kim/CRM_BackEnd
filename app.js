@@ -2354,8 +2354,8 @@ app.post('/admin/leads', async (req, res) => {
 
 app.post('/admin/leads/:id/update', async (req, res) => {
     const { id } = req.params;
-    const { status, region, memo, tmId, reservationAt, name } = req.body || {};
-    if (!status && region === undefined && !memo && tmId === undefined && reservationAt === undefined && name === undefined) {
+    const { status, region, memo, tmId, reservationAt, name, event } = req.body || {};
+    if (!status && region === undefined && !memo && tmId === undefined && reservationAt === undefined && name === undefined && event === undefined) {
         return res.status(400).json({ error: 'no changes provided' });
     }
 
@@ -2416,6 +2416,11 @@ app.post('/admin/leads/:id/update', async (req, res) => {
         if (name !== undefined) {
             updates.push('이름 = ?');
             params.push(name || null);
+        }
+
+        if (event !== undefined) {
+            updates.push('이벤트 = ?');
+            params.push(event || null);
         }
 
         if (tmId !== undefined) {
