@@ -250,6 +250,8 @@ app.get('/chat/lead/:id', async (req, res) => {
                 m.id,
                 m.memo_time,
                 m.memo_content,
+                m.status_tag,
+                m.status_reservation_at,
                 m.tm_id,
                 t.name AS tm_name
             FROM tm_memos m
@@ -494,6 +496,31 @@ const parseLocalDateTimeString = (value) => {
     const hh = String(date.getHours()).padStart(2, '0');
     const mi = String(date.getMinutes()).padStart(2, '0');
     const ss = String(date.getSeconds()).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`;
+};
+
+const normalizeDateTimeForDb = (value) => {
+    if (value === undefined || value === null || value === '') return null;
+    if (value instanceof Date) {
+        if (Number.isNaN(value.getTime())) return null;
+        const yyyy = value.getFullYear();
+        const mm = String(value.getMonth() + 1).padStart(2, '0');
+        const dd = String(value.getDate()).padStart(2, '0');
+        const hh = String(value.getHours()).padStart(2, '0');
+        const mi = String(value.getMinutes()).padStart(2, '0');
+        const ss = String(value.getSeconds()).padStart(2, '0');
+        return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`;
+    }
+    const parsedLocal = parseLocalDateTimeString(value);
+    if (parsedLocal) return parsedLocal;
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return null;
+    const yyyy = parsed.getFullYear();
+    const mm = String(parsed.getMonth() + 1).padStart(2, '0');
+    const dd = String(parsed.getDate()).padStart(2, '0');
+    const hh = String(parsed.getHours()).padStart(2, '0');
+    const mi = String(parsed.getMinutes()).padStart(2, '0');
+    const ss = String(parsed.getSeconds()).padStart(2, '0');
     return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`;
 };
 
@@ -1468,6 +1495,8 @@ app.get('/tm/memos', async (req, res) => {
                 m.id,
                 m.memo_time,
                 m.memo_content,
+                m.status_tag,
+                m.status_reservation_at,
                 m.tm_id,
                 t.name AS tm_name
             FROM tm_memos m
@@ -1564,8 +1593,9 @@ app.post('/tm/leads/:id/update', async (req, res) => {
 
     try {
         await ensureRecallColumns();
-        const [rows] = await pool.query('SELECT 상태 FROM tm_leads WHERE id = ?', [id]);
+        const [rows] = await pool.query('SELECT 상태, 예약_내원일시 FROM tm_leads WHERE id = ?', [id]);
         const currentStatus = rows[0]?.상태 ?? null;
+        const currentReservationAt = rows[0]?.예약_내원일시 ?? null;
         const statusProvided = status !== undefined;
         const statusChanged = statusProvided && status !== currentStatus;
         const nextStatus = statusProvided ? status : currentStatus;
@@ -1606,9 +1636,15 @@ app.post('/tm/leads/:id/update', async (req, res) => {
         const shouldUpdateReservationAt =
             reservationAt !== undefined &&
             (reservationAt !== null && String(reservationAt).trim() !== '');
+        const normalizedReservationAt = shouldUpdateReservationAt
+            ? parseLocalDateTimeString(reservationAt)
+            : null;
+        if (shouldUpdateReservationAt && !normalizedReservationAt) {
+            return res.status(400).json({ error: 'reservationAt must be YYYY-MM-DD HH:mm[:ss]' });
+        }
         if (shouldUpdateReservationAt) {
             updates.push('예약_내원일시 = ?');
-            params.push(reservationAt);
+            params.push(normalizedReservationAt);
         }
         if (statusChanged && nextStatus === '리콜대기') {
             updates.push('리콜_예정일시 = ?');
@@ -1644,9 +1680,14 @@ app.post('/tm/leads/:id/update', async (req, res) => {
         }
 
         if (memo && String(memo).trim().length > 0) {
+            const memoStatusTag = String(nextStatus || '').trim() || null;
+            const effectiveReservationAt = normalizedReservationAt || currentReservationAt;
+            const memoStatusReservationAt = ['예약', '예약부도', '내원완료'].includes(memoStatusTag)
+                ? (normalizeDateTimeForDb(effectiveReservationAt) || null)
+                : null;
             await pool.query(
-                'INSERT INTO tm_memos (memo_content, target_phone, tm_id, tm_lead_id) VALUES (?, ?, ?, ?)',
-                [memo, req.body.phone || '', tmId, id]
+                'INSERT INTO tm_memos (memo_content, status_tag, status_reservation_at, target_phone, tm_id, tm_lead_id) VALUES (?, ?, ?, ?, ?, ?)',
+                [memo, memoStatusTag, memoStatusReservationAt, req.body.phone || '', tmId, id]
             );
         }
 
@@ -2637,16 +2678,14 @@ app.post('/admin/leads/:id/update', async (req, res) => {
 
     try {
         await ensureLeadAssignedDateColumn();
-        let currentStatus = null;
-        let currentTm = null;
-        if (status !== undefined) {
-            const [rows] = await pool.query('SELECT 상태 FROM tm_leads WHERE id = ?', [id]);
-            currentStatus = rows[0]?.상태 ?? null;
+        const [leadRows] = await pool.query('SELECT 상태, tm, 예약_내원일시 FROM tm_leads WHERE id = ?', [id]);
+        const lead = leadRows?.[0];
+        if (!lead) {
+            return res.status(404).json({ error: 'Lead not found' });
         }
-        if (tmId !== undefined) {
-            const [rows] = await pool.query('SELECT tm FROM tm_leads WHERE id = ?', [id]);
-            currentTm = rows[0]?.tm ?? null;
-        }
+        const currentStatus = lead.상태 ?? null;
+        const currentTm = lead.tm ?? null;
+        const currentReservationAt = lead.예약_내원일시 ?? null;
         const statusProvided = status !== undefined;
         const statusChanged = statusProvided && status !== currentStatus;
 
@@ -2656,17 +2695,23 @@ app.post('/admin/leads/:id/update', async (req, res) => {
         const shouldUpdateReservationAt =
             reservationAt !== undefined &&
             (reservationAt !== null && String(reservationAt).trim() !== '');
+        const normalizedReservationAt = shouldUpdateReservationAt
+            ? parseLocalDateTimeString(reservationAt)
+            : null;
+        if (shouldUpdateReservationAt && !normalizedReservationAt) {
+            return res.status(400).json({ error: 'reservationAt must be YYYY-MM-DD HH:mm[:ss]' });
+        }
 
         if (statusChanged) {
             updates.push('상태 = ?');
             params.push(status);
             if (shouldUpdateReservationAt) {
                 updates.push('예약_내원일시 = ?');
-                params.push(reservationAt);
+                params.push(normalizedReservationAt);
             }
         } else if (shouldUpdateReservationAt) {
             updates.push('예약_내원일시 = ?');
-            params.push(reservationAt);
+            params.push(normalizedReservationAt);
         }
 
         const callStatuses = ['부재중', '리콜대기', '예약', '실패'];
@@ -2721,9 +2766,15 @@ app.post('/admin/leads/:id/update', async (req, res) => {
         }
 
         if (memo && String(memo).trim().length > 0) {
+            const nextStatus = statusProvided ? status : currentStatus;
+            const memoStatusTag = String(nextStatus || '').trim() || null;
+            const effectiveReservationAt = normalizedReservationAt || currentReservationAt;
+            const memoStatusReservationAt = ['예약', '예약부도', '내원완료'].includes(memoStatusTag)
+                ? (normalizeDateTimeForDb(effectiveReservationAt) || null)
+                : null;
             await pool.query(
-                'INSERT INTO tm_memos (memo_content, target_phone, tm_id, tm_lead_id) VALUES (?, ?, ?, ?)',
-                [memo, req.body.phone || '', tmId || 0, id]
+                'INSERT INTO tm_memos (memo_content, status_tag, status_reservation_at, target_phone, tm_id, tm_lead_id) VALUES (?, ?, ?, ?, ?, ?)',
+                [memo, memoStatusTag, memoStatusReservationAt, req.body.phone || '', tmId || 0, id]
             );
         }
 
