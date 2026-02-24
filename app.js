@@ -1429,7 +1429,7 @@ app.post('/tm/assign', async (req, res) => {
 });
 
 app.get('/tm/memos', async (req, res) => {
-    const { phone, detailed, leadId } = req.query || {};
+    const { phone, detailed, leadId, limit } = req.query || {};
     if (!phone) {
         return res.status(400).json({ error: 'phone is required' });
     }
@@ -1441,6 +1441,10 @@ app.get('/tm/memos', async (req, res) => {
         return res.status(400).json({ error: 'valid phone is required' });
     }
     const detailedMode = detailed === '1' || detailed === 'true' || detailed === true;
+    const parsedLimit = Number(limit);
+    const memoLimit = Number.isNaN(parsedLimit) || parsedLimit <= 0
+        ? 0
+        : Math.min(parsedLimit, 200);
     const excludeLeadId = Number(leadId);
     const hasExcludeLeadId = !Number.isNaN(excludeLeadId);
 
@@ -1459,8 +1463,7 @@ app.get('/tm/memos', async (req, res) => {
             ')', '')
         `;
 
-        const [rows] = await pool.query(
-            `
+        const sql = `
             SELECT
                 m.id,
                 m.memo_time,
@@ -1471,9 +1474,10 @@ app.get('/tm/memos', async (req, res) => {
             LEFT JOIN tm t ON t.id = m.tm_id
             WHERE ${normalizePhoneSql('m.target_phone')} = ?
             ORDER BY m.memo_time DESC
-            `,
-            [normalizedPhone]
-        );
+            ${memoLimit > 0 ? 'LIMIT ?' : ''}
+            `;
+        const params = memoLimit > 0 ? [normalizedPhone, memoLimit] : [normalizedPhone];
+        const [rows] = await pool.query(sql, params);
 
         if (!detailedMode) {
             return res.json(rows);
@@ -3014,6 +3018,37 @@ app.get('/dbdata/export', async (req, res) => {
     } catch (err) {
         console.error(err);
         res.status(500).json({ error: 'Export failed' });
+    }
+});
+
+app.delete('/tm/memos/:id', async (req, res) => {
+    const { id } = req.params;
+    const { tmId } = req.body || {};
+    const sessionTmId = req.session?.user?.id;
+    const actorTmId = tmId || sessionTmId || req.query?.tmId;
+
+    if (!actorTmId) {
+        return res.status(400).json({ error: 'tmId is required' });
+    }
+
+    try {
+        const [rows] = await pool.query(
+            'SELECT id, tm_id FROM tm_memos WHERE id = ? LIMIT 1',
+            [id]
+        );
+        const memo = rows[0];
+        if (!memo) {
+            return res.status(404).json({ error: 'Memo not found' });
+        }
+        if (String(memo.tm_id || '') !== String(actorTmId)) {
+            return res.status(403).json({ error: 'Only author can delete this memo' });
+        }
+
+        await pool.query('DELETE FROM tm_memos WHERE id = ?', [id]);
+        return res.json({ ok: true });
+    } catch (err) {
+        console.error(err);
+        return res.status(500).json({ error: 'DB query failed' });
     }
 });
 
