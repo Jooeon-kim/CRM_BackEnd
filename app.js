@@ -1,6 +1,8 @@
 ﻿const express = require('express');
 const session = require('express-session');
 const cors = require('cors');
+const http = require('http');
+const { Server } = require('socket.io');
 require('dotenv').config();
 const pool = require('./db');
 
@@ -30,7 +32,7 @@ app.use(cors({
 }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
-app.use(session({
+const sessionMiddleware = session({
     name: 'sid',
     secret: process.env.SESSION_SECRET || 'F8v!q2Kz9@Lm4#Nx7$Rp1^Tg6&Hy3*Ud5+Wm8?Sa',
     resave: false,
@@ -41,7 +43,8 @@ app.use(session({
         secure: process.env.NODE_ENV === 'production' || process.env.COOKIE_SAMESITE === 'none',
         maxAge: 1000 * 60 * 60
     }
-}));
+});
+app.use(sessionMiddleware);
 
 const authRouter = require('./routes/auth');
 const ExcelJS = require('exceljs');
@@ -67,8 +70,35 @@ app.get('/version', (req, res) => {
 
 app.use('/auth', authRouter);
 
-app.listen(3000, () => {
-    console.log('서버가 3000번 포트에서 실행중입니다.');
+app.get('/chat/messages', async (req, res) => {
+    try {
+        const sessionUser = req.session?.user;
+        if (!sessionUser?.id) {
+            return res.status(401).json({ error: 'login required' });
+        }
+        await ensureChatSchema();
+        const limitRaw = Number(req.query?.limit);
+        const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 300) : 100;
+        const [rows] = await pool.query(
+            `
+            SELECT
+                id,
+                sender_tm_id,
+                sender_name,
+                sender_role,
+                message,
+                created_at
+            FROM tm_chat_messages
+            ORDER BY id DESC
+            LIMIT ?
+            `,
+            [limit]
+        );
+        return res.json((rows || []).reverse());
+    } catch (err) {
+        console.error(err);
+        return res.status(500).json({ error: 'Fetch chat messages failed' });
+    }
 });
 
 // NOTE: removed unused /info endpoint (list was undefined)
@@ -210,6 +240,38 @@ const ensureCompanyScheduleSchema = async () => {
         });
     }
     return ensureCompanyScheduleSchemaPromise;
+};
+
+let ensureChatSchemaPromise = null;
+const ensureChatSchema = async () => {
+    if (!ensureChatSchemaPromise) {
+        ensureChatSchemaPromise = (async () => {
+            const [tables] = await pool.query(`
+                SELECT COUNT(*) AS cnt
+                FROM INFORMATION_SCHEMA.TABLES
+                WHERE TABLE_SCHEMA = DATABASE()
+                  AND TABLE_NAME = 'tm_chat_messages'
+            `);
+            if (tables[0]?.cnt === 0) {
+                await pool.query(`
+                    CREATE TABLE tm_chat_messages (
+                        id BIGINT NOT NULL AUTO_INCREMENT,
+                        sender_tm_id BIGINT NOT NULL,
+                        sender_name VARCHAR(50) NOT NULL,
+                        sender_role VARCHAR(20) NOT NULL,
+                        message TEXT NOT NULL,
+                        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        PRIMARY KEY (id),
+                        KEY idx_tm_chat_created_at (created_at),
+                        KEY idx_tm_chat_sender (sender_tm_id, created_at)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+                `);
+            }
+        })().finally(() => {
+            ensureChatSchemaPromise = null;
+        });
+    }
+    return ensureChatSchemaPromise;
 };
 
 const parseLocalDateTimeString = (value) => {
@@ -2743,6 +2805,94 @@ app.get('/dbdata/export', async (req, res) => {
         console.error(err);
         res.status(500).json({ error: 'Export failed' });
     }
+});
+
+const server = http.createServer(app);
+const io = new Server(server, {
+    cors: {
+        origin: (origin, callback) => {
+            if (!origin) return callback(null, true);
+            if (allowedOriginSet.size === 0) return callback(null, true);
+            if (allowedOriginSet.has(normalizeOrigin(origin))) return callback(null, true);
+            return callback(new Error('Not allowed by CORS'));
+        },
+        credentials: true,
+    },
+});
+
+io.use((socket, next) => {
+    sessionMiddleware(socket.request, {}, next);
+});
+
+io.use((socket, next) => {
+    const sessionUser = socket.request?.session?.user;
+    if (!sessionUser?.id) {
+        return next(new Error('Unauthorized'));
+    }
+    return next();
+});
+
+io.on('connection', (socket) => {
+    socket.on('chat:send', async (payload, ack) => {
+        try {
+            const sessionUser = socket.request?.session?.user;
+            if (!sessionUser?.id) {
+                if (typeof ack === 'function') ack({ ok: false, error: 'Unauthorized' });
+                return;
+            }
+
+            const message = String(payload?.message || '').trim();
+            if (!message) {
+                if (typeof ack === 'function') ack({ ok: false, error: 'message is required' });
+                return;
+            }
+            if (message.length > 2000) {
+                if (typeof ack === 'function') ack({ ok: false, error: 'message too long' });
+                return;
+            }
+
+            const senderTmId = Number(sessionUser.id);
+            const senderName = String(sessionUser.username || 'Unknown');
+            const senderRole = socket.request?.session?.isAdmin ? 'admin' : 'tm';
+            await ensureChatSchema();
+            const [result] = await pool.query(
+                `
+                INSERT INTO tm_chat_messages (
+                    sender_tm_id, sender_name, sender_role, message
+                ) VALUES (?, ?, ?, ?)
+                `,
+                [senderTmId, senderName, senderRole, message]
+            );
+
+            const [rows] = await pool.query(
+                `
+                SELECT
+                    id,
+                    sender_tm_id,
+                    sender_name,
+                    sender_role,
+                    message,
+                    created_at
+                FROM tm_chat_messages
+                WHERE id = ?
+                LIMIT 1
+                `,
+                [result.insertId]
+            );
+            const saved = rows?.[0];
+            if (saved) {
+                io.emit('chat:new', saved);
+            }
+            if (typeof ack === 'function') ack({ ok: true, data: saved || null });
+        } catch (err) {
+            console.error(err);
+            if (typeof ack === 'function') ack({ ok: false, error: 'send failed' });
+        }
+    });
+});
+
+server.listen(3000, () => {
+    console.log('서버가 3000번 포트에서 실행중입니다.');
 });
 
 
