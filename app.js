@@ -75,18 +75,23 @@ app.get('/chat/users', async (req, res) => {
         const sessionUser = req.session?.user;
         const fallbackTmId = Number(req.query?.tmId || 0);
         const resolvedTmId = Number(sessionUser?.id || 0) || fallbackTmId;
-        if (!resolvedTmId) {
-            return res.status(401).json({ error: 'login required' });
-        }
-        const [rows] = await pool.query(
-            `
-            SELECT id, name, isAdmin
-            FROM tm
-            WHERE id <> ?
-            ORDER BY name ASC
-            `,
-            [resolvedTmId]
-        );
+        const [rows] = resolvedTmId
+            ? await pool.query(
+                `
+                SELECT id, name, isAdmin
+                FROM tm
+                WHERE id <> ?
+                ORDER BY name ASC
+                `,
+                [resolvedTmId]
+            )
+            : await pool.query(
+                `
+                SELECT id, name, isAdmin
+                FROM tm
+                ORDER BY name ASC
+                `
+            );
         return res.json(rows || []);
     } catch (err) {
         console.error(err);
@@ -99,9 +104,6 @@ app.get('/chat/messages', async (req, res) => {
         const sessionUser = req.session?.user;
         const fallbackTmId = Number(req.query?.tmId || 0);
         const resolvedTmId = Number(sessionUser?.id || 0) || fallbackTmId;
-        if (!resolvedTmId) {
-            return res.status(401).json({ error: 'login required' });
-        }
         await ensureChatSchema();
         const limitRaw = Number(req.query?.limit);
         const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 300) : 100;
@@ -123,11 +125,11 @@ app.get('/chat/messages', async (req, res) => {
                     created_at
                 FROM tm_chat_messages
                 WHERE is_group = 1
-                   OR (is_group = 0 AND (sender_tm_id = ? OR target_tm_id = ?))
+                   OR (? > 0 AND is_group = 0 AND (sender_tm_id = ? OR target_tm_id = ?))
                 ORDER BY id DESC
                 LIMIT ?
                 `,
-                [resolvedTmId, resolvedTmId, limit]
+                [resolvedTmId, resolvedTmId, resolvedTmId, limit]
             );
             rows = allRows || [];
         } else if (isGroup) {
@@ -151,6 +153,9 @@ app.get('/chat/messages', async (req, res) => {
             );
             rows = groupRows || [];
         } else {
+            if (!resolvedTmId) {
+                return res.json([]);
+            }
             const [directRows] = await pool.query(
                 `
                 SELECT
