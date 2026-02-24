@@ -82,8 +82,7 @@ app.get('/chat/users', async (req, res) => {
             `
             SELECT id, name, isAdmin
             FROM tm
-            WHERE isAdmin = 0
-              AND id <> ?
+            WHERE id <> ?
             ORDER BY name ASC
             `,
             [resolvedTmId]
