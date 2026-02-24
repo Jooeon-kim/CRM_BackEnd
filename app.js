@@ -107,6 +107,8 @@ app.get('/chat/messages', async (req, res) => {
         await ensureChatSchema();
         const limitRaw = Number(req.query?.limit);
         const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 300) : 100;
+        const beforeIdRaw = Number(req.query?.beforeId || 0);
+        const beforeId = Number.isFinite(beforeIdRaw) && beforeIdRaw > 0 ? beforeIdRaw : 0;
         const scope = String(req.query?.scope || '').trim().toLowerCase();
         const targetTmId = Number(req.query?.targetTmId || 0);
         const isGroup = !targetTmId;
@@ -122,6 +124,9 @@ app.get('/chat/messages', async (req, res) => {
                     sender_name,
                     sender_role,
                     message,
+                    message_type,
+                    shared_lead_id,
+                    shared_payload,
                     created_at
                 FROM tm_chat_messages
                 WHERE is_group = 1
@@ -143,13 +148,17 @@ app.get('/chat/messages', async (req, res) => {
                     sender_name,
                     sender_role,
                     message,
+                    message_type,
+                    shared_lead_id,
+                    shared_payload,
                     created_at
                 FROM tm_chat_messages
                 WHERE is_group = 1
+                  AND (? = 0 OR id < ?)
                 ORDER BY id DESC
                 LIMIT ?
                 `,
-                [limit]
+                [beforeId, beforeId, limit]
             );
             rows = groupRows || [];
         } else {
@@ -166,6 +175,9 @@ app.get('/chat/messages', async (req, res) => {
                     sender_name,
                     sender_role,
                     message,
+                    message_type,
+                    shared_lead_id,
+                    shared_payload,
                     created_at
                 FROM tm_chat_messages
                 WHERE is_group = 0
@@ -174,10 +186,11 @@ app.get('/chat/messages', async (req, res) => {
                     OR
                     (sender_tm_id = ? AND target_tm_id = ?)
                   )
+                  AND (? = 0 OR id < ?)
                 ORDER BY id DESC
                 LIMIT ?
                 `,
-                [resolvedTmId, targetTmId, targetTmId, resolvedTmId, limit]
+                [resolvedTmId, targetTmId, targetTmId, resolvedTmId, beforeId, beforeId, limit]
             );
             rows = directRows || [];
         }
@@ -185,6 +198,75 @@ app.get('/chat/messages', async (req, res) => {
     } catch (err) {
         console.error(err);
         return res.status(500).json({ error: 'Fetch chat messages failed' });
+    }
+});
+
+app.get('/chat/lead/:id', async (req, res) => {
+    try {
+        const sessionUser = req.session?.user;
+        const fallbackTmId = Number(req.query?.tmId || 0);
+        const resolvedTmId = Number(sessionUser?.id || 0) || fallbackTmId;
+        if (!resolvedTmId) {
+            return res.status(401).json({ error: 'Unauthorized' });
+        }
+        const leadId = Number(req.params?.id || 0);
+        if (!leadId) {
+            return res.status(400).json({ error: 'Invalid lead id' });
+        }
+
+        const [leadRows] = await pool.query(
+            `
+            SELECT
+                l.id,
+                l.\`인입날짜\` AS inbound_at,
+                l.\`이름\` AS name,
+                l.\`연락처\` AS phone,
+                l.\`이벤트\` AS event_name,
+                l.\`상담가능시간\` AS available_time,
+                l.\`tm\` AS tm_id,
+                t.name AS tm_name,
+                l.\`상태\` AS status_name,
+                l.\`거주지\` AS region_name,
+                l.\`콜횟수\` AS call_count,
+                l.\`부재중_횟수\` AS missed_count,
+                l.\`예약부도_횟수\` AS no_show_count,
+                l.\`콜_날짜시간\` AS called_at,
+                l.\`예약_내원일시\` AS reservation_at,
+                l.\`리콜_예정일시\` AS recall_at
+            FROM tm_leads l
+            LEFT JOIN tm t ON t.id = l.tm
+            WHERE l.id = ?
+            LIMIT 1
+            `,
+            [leadId]
+        );
+        if (!leadRows || leadRows.length === 0) {
+            return res.status(404).json({ error: 'Lead not found' });
+        }
+
+        const [memoRows] = await pool.query(
+            `
+            SELECT
+                m.id,
+                m.memo_time,
+                m.memo_content,
+                m.tm_id,
+                t.name AS tm_name
+            FROM tm_memos m
+            LEFT JOIN tm t ON t.id = m.tm_id
+            WHERE m.tm_lead_id = ?
+            ORDER BY m.memo_time DESC, m.id DESC
+            `,
+            [leadId]
+        );
+
+        return res.json({
+            lead: leadRows[0],
+            memos: memoRows || [],
+        });
+    } catch (err) {
+        console.error(err);
+        return res.status(500).json({ error: 'Fetch shared lead failed' });
     }
 });
 
@@ -349,6 +431,9 @@ const ensureChatSchema = async () => {
                         sender_name VARCHAR(50) NOT NULL,
                         sender_role VARCHAR(20) NOT NULL,
                         message TEXT NOT NULL,
+                        message_type VARCHAR(20) NOT NULL DEFAULT 'text',
+                        shared_lead_id BIGINT DEFAULT NULL,
+                        shared_payload JSON DEFAULT NULL,
                         created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                         PRIMARY KEY (id),
                         KEY idx_tm_chat_created_at (created_at),
@@ -368,6 +453,9 @@ const ensureChatSchema = async () => {
                 const alterParts = [];
                 if (!has.has('target_tm_id')) alterParts.push('ADD COLUMN target_tm_id BIGINT DEFAULT NULL AFTER sender_tm_id');
                 if (!has.has('is_group')) alterParts.push('ADD COLUMN is_group TINYINT(1) NOT NULL DEFAULT 1 AFTER target_tm_id');
+                if (!has.has('message_type')) alterParts.push("ADD COLUMN message_type VARCHAR(20) NOT NULL DEFAULT 'text' AFTER message");
+                if (!has.has('shared_lead_id')) alterParts.push('ADD COLUMN shared_lead_id BIGINT DEFAULT NULL AFTER message_type');
+                if (!has.has('shared_payload')) alterParts.push('ADD COLUMN shared_payload JSON DEFAULT NULL AFTER shared_lead_id');
                 if (alterParts.length > 0) {
                     await pool.query(`ALTER TABLE tm_chat_messages ${alterParts.join(', ')}`);
                 }
@@ -2977,8 +3065,19 @@ io.on('connection', (socket) => {
             }
 
             const message = String(payload?.message || '').trim();
-            if (!message) {
+            const messageTypeRaw = String(payload?.messageType || 'text').trim().toLowerCase();
+            const messageType = messageTypeRaw === 'lead_share' ? 'lead_share' : 'text';
+            const sharedLeadId = Number(payload?.sharedLeadId || 0);
+            const sharedPayload = payload?.sharedPayload && typeof payload.sharedPayload === 'object'
+                ? payload.sharedPayload
+                : null;
+
+            if (messageType === 'text' && !message) {
                 if (typeof ack === 'function') ack({ ok: false, error: 'message is required' });
+                return;
+            }
+            if (messageType === 'lead_share' && !sharedLeadId) {
+                if (typeof ack === 'function') ack({ ok: false, error: 'sharedLeadId is required' });
                 return;
             }
             if (message.length > 2000) {
@@ -2998,10 +3097,20 @@ io.on('connection', (socket) => {
             const [result] = await pool.query(
                 `
                 INSERT INTO tm_chat_messages (
-                    sender_tm_id, target_tm_id, is_group, sender_name, sender_role, message
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                    sender_tm_id, target_tm_id, is_group, sender_name, sender_role, message, message_type, shared_lead_id, shared_payload
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 `,
-                [currentActor.senderTmId, targetTmId, isGroup ? 1 : 0, currentActor.senderName, currentActor.senderRole, message]
+                [
+                    currentActor.senderTmId,
+                    targetTmId,
+                    isGroup ? 1 : 0,
+                    currentActor.senderName,
+                    currentActor.senderRole,
+                    message,
+                    messageType,
+                    sharedLeadId || null,
+                    sharedPayload ? JSON.stringify(sharedPayload) : null,
+                ]
             );
 
             const [rows] = await pool.query(
@@ -3014,6 +3123,9 @@ io.on('connection', (socket) => {
                     sender_name,
                     sender_role,
                     message,
+                    message_type,
+                    shared_lead_id,
+                    shared_payload,
                     created_at
                 FROM tm_chat_messages
                 WHERE id = ?
