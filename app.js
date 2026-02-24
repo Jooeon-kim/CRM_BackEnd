@@ -106,10 +106,32 @@ app.get('/chat/messages', async (req, res) => {
         await ensureChatSchema();
         const limitRaw = Number(req.query?.limit);
         const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 300) : 100;
+        const scope = String(req.query?.scope || '').trim().toLowerCase();
         const targetTmId = Number(req.query?.targetTmId || 0);
         const isGroup = !targetTmId;
         let rows = [];
-        if (isGroup) {
+        if (scope === 'all') {
+            const [allRows] = await pool.query(
+                `
+                SELECT
+                    id,
+                    sender_tm_id,
+                    target_tm_id,
+                    is_group,
+                    sender_name,
+                    sender_role,
+                    message,
+                    created_at
+                FROM tm_chat_messages
+                WHERE is_group = 1
+                   OR (is_group = 0 AND (sender_tm_id = ? OR target_tm_id = ?))
+                ORDER BY id DESC
+                LIMIT ?
+                `,
+                [resolvedTmId, resolvedTmId, limit]
+            );
+            rows = allRows || [];
+        } else if (isGroup) {
             const [groupRows] = await pool.query(
                 `
                 SELECT
