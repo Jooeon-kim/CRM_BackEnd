@@ -2396,7 +2396,7 @@ app.post('/admin/leads/:id/update', async (req, res) => {
         const callStatuses = ['부재중', '리콜대기', '예약', '실패'];
         const isMissed = status === '부재중';
         const isNoShow = status === '예약부도';
-        const shouldApplyCallMetrics = statusChanged || isMissed;
+        const shouldApplyCallMetrics = statusChanged;
         const incCall = shouldApplyCallMetrics && callStatuses.includes(status);
         if (shouldApplyCallMetrics) {
             updates.push('콜_날짜시간 = NOW()');
