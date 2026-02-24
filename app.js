@@ -73,7 +73,9 @@ app.use('/auth', authRouter);
 app.get('/chat/messages', async (req, res) => {
     try {
         const sessionUser = req.session?.user;
-        if (!sessionUser?.id) {
+        const fallbackTmId = Number(req.query?.tmId || 0);
+        const resolvedTmId = Number(sessionUser?.id || 0) || fallbackTmId;
+        if (!resolvedTmId) {
             return res.status(401).json({ error: 'login required' });
         }
         await ensureChatSchema();
@@ -2826,7 +2828,8 @@ io.use((socket, next) => {
 
 io.use((socket, next) => {
     const sessionUser = socket.request?.session?.user;
-    if (!sessionUser?.id) {
+    const authTmId = Number(socket.handshake?.auth?.tmId || 0);
+    if (!sessionUser?.id && !authTmId) {
         return next(new Error('Unauthorized'));
     }
     return next();
@@ -2836,7 +2839,9 @@ io.on('connection', (socket) => {
     socket.on('chat:send', async (payload, ack) => {
         try {
             const sessionUser = socket.request?.session?.user;
-            if (!sessionUser?.id) {
+            const authTmId = Number(socket.handshake?.auth?.tmId || 0);
+            const resolvedTmId = Number(sessionUser?.id || 0) || authTmId;
+            if (!resolvedTmId) {
                 if (typeof ack === 'function') ack({ ok: false, error: 'Unauthorized' });
                 return;
             }
@@ -2851,9 +2856,15 @@ io.on('connection', (socket) => {
                 return;
             }
 
-            const senderTmId = Number(sessionUser.id);
-            const senderName = String(sessionUser.username || 'Unknown');
-            const senderRole = socket.request?.session?.isAdmin ? 'admin' : 'tm';
+            const senderTmId = resolvedTmId;
+            const senderName = String(
+                sessionUser?.username ||
+                socket.handshake?.auth?.username ||
+                'Unknown'
+            );
+            const senderRole = socket.request?.session?.isAdmin || socket.handshake?.auth?.isAdmin
+                ? 'admin'
+                : 'tm';
             await ensureChatSchema();
             const [result] = await pool.query(
                 `
