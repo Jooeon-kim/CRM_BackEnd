@@ -87,7 +87,8 @@ router.post('/login', async (req, res) => {
         }
 
         req.session.user = { id: user.id, username: user.name };
-        req.session.isAdmin = user.isAdmin === 1;
+        // mysql tinyint(1) may be returned as number/boolean/string by env/driver settings.
+        req.session.isAdmin = Number(user.isAdmin) === 1;
 
         try {
             await pool.query('UPDATE tm SET last_login_at = NOW() WHERE id = ?', [user.id]);
