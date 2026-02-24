@@ -32,7 +32,7 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 app.use(session({
     name: 'sid',
-    secret: process.env.SESSION_SECRET || 'change-me',
+    secret: process.env.SESSION_SECRET || 'F8v!q2Kz9@Lm4#Nx7$Rp1^Tg6&Hy3*Ud5+Wm8?Sa',
     resave: false,
     saveUninitialized: false,
     cookie: {
