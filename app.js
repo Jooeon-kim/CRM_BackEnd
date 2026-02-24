@@ -1593,9 +1593,10 @@ app.post('/tm/leads/:id/update', async (req, res) => {
 
     try {
         await ensureRecallColumns();
-        const [rows] = await pool.query('SELECT 상태, 예약_내원일시 FROM tm_leads WHERE id = ?', [id]);
+        const [rows] = await pool.query('SELECT 상태, 예약_내원일시, 연락처 FROM tm_leads WHERE id = ?', [id]);
         const currentStatus = rows[0]?.상태 ?? null;
         const currentReservationAt = rows[0]?.예약_내원일시 ?? null;
+        const currentPhone = rows[0]?.연락처 ?? '';
         const statusProvided = status !== undefined;
         const statusChanged = statusProvided && status !== currentStatus;
         const nextStatus = statusProvided ? status : currentStatus;
@@ -1679,7 +1680,9 @@ app.post('/tm/leads/:id/update', async (req, res) => {
             return res.status(404).json({ error: 'Lead not found' });
         }
 
-        if (memo && String(memo).trim().length > 0) {
+        const shouldAutoStatusMemo = statusChanged && ['예약부도', '내원완료'].includes(String(nextStatus || '').trim());
+        const finalMemoText = String(memo || '').trim() || (shouldAutoStatusMemo ? String(nextStatus || '').trim() : '');
+        if (finalMemoText) {
             const memoStatusTag = String(nextStatus || '').trim() || null;
             const effectiveReservationAt = normalizedReservationAt || currentReservationAt;
             const memoStatusReservationAt = ['예약', '예약부도', '내원완료'].includes(memoStatusTag)
@@ -1687,7 +1690,7 @@ app.post('/tm/leads/:id/update', async (req, res) => {
                 : null;
             await pool.query(
                 'INSERT INTO tm_memos (memo_content, status_tag, status_reservation_at, target_phone, tm_id, tm_lead_id) VALUES (?, ?, ?, ?, ?, ?)',
-                [memo, memoStatusTag, memoStatusReservationAt, req.body.phone || '', tmId, id]
+                [finalMemoText, memoStatusTag, memoStatusReservationAt, req.body.phone || currentPhone || '', tmId, id]
             );
         }
 
@@ -2678,7 +2681,7 @@ app.post('/admin/leads/:id/update', async (req, res) => {
 
     try {
         await ensureLeadAssignedDateColumn();
-        const [leadRows] = await pool.query('SELECT 상태, tm, 예약_내원일시 FROM tm_leads WHERE id = ?', [id]);
+        const [leadRows] = await pool.query('SELECT 상태, tm, 예약_내원일시, 연락처 FROM tm_leads WHERE id = ?', [id]);
         const lead = leadRows?.[0];
         if (!lead) {
             return res.status(404).json({ error: 'Lead not found' });
@@ -2686,6 +2689,7 @@ app.post('/admin/leads/:id/update', async (req, res) => {
         const currentStatus = lead.상태 ?? null;
         const currentTm = lead.tm ?? null;
         const currentReservationAt = lead.예약_내원일시 ?? null;
+        const currentPhone = lead.연락처 ?? '';
         const statusProvided = status !== undefined;
         const statusChanged = statusProvided && status !== currentStatus;
 
@@ -2765,8 +2769,10 @@ app.post('/admin/leads/:id/update', async (req, res) => {
             return res.status(404).json({ error: 'Lead not found' });
         }
 
-        if (memo && String(memo).trim().length > 0) {
-            const nextStatus = statusProvided ? status : currentStatus;
+        const nextStatus = statusProvided ? status : currentStatus;
+        const shouldAutoStatusMemo = statusChanged && ['예약부도', '내원완료'].includes(String(nextStatus || '').trim());
+        const finalMemoText = String(memo || '').trim() || (shouldAutoStatusMemo ? String(nextStatus || '').trim() : '');
+        if (finalMemoText) {
             const memoStatusTag = String(nextStatus || '').trim() || null;
             const effectiveReservationAt = normalizedReservationAt || currentReservationAt;
             const memoStatusReservationAt = ['예약', '예약부도', '내원완료'].includes(memoStatusTag)
@@ -2774,7 +2780,7 @@ app.post('/admin/leads/:id/update', async (req, res) => {
                 : null;
             await pool.query(
                 'INSERT INTO tm_memos (memo_content, status_tag, status_reservation_at, target_phone, tm_id, tm_lead_id) VALUES (?, ?, ?, ?, ?, ?)',
-                [memo, memoStatusTag, memoStatusReservationAt, req.body.phone || '', tmId || 0, id]
+                [finalMemoText, memoStatusTag, memoStatusReservationAt, req.body.phone || currentPhone || '', tmId || 0, id]
             );
         }
 
