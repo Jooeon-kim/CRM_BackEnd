@@ -256,6 +256,17 @@ const ensureAdminRequest = async (req) => {
     }
 };
 
+app.use('/admin', async (req, res, next) => {
+    if (req.method === 'OPTIONS') {
+        return next();
+    }
+    const allowed = await ensureAdminRequest(req);
+    if (!allowed) {
+        return res.status(403).json({ error: 'Admin only' });
+    }
+    return next();
+});
+
 app.get('/dbdata', async (req, res) => {
     try {
         const { tm, status, callMin, missMin, region, memo, assignedToday } = req.query || {};
