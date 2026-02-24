@@ -70,6 +70,31 @@ app.get('/version', (req, res) => {
 
 app.use('/auth', authRouter);
 
+app.get('/chat/users', async (req, res) => {
+    try {
+        const sessionUser = req.session?.user;
+        const fallbackTmId = Number(req.query?.tmId || 0);
+        const resolvedTmId = Number(sessionUser?.id || 0) || fallbackTmId;
+        if (!resolvedTmId) {
+            return res.status(401).json({ error: 'login required' });
+        }
+        const [rows] = await pool.query(
+            `
+            SELECT id, name, isAdmin
+            FROM tm
+            WHERE isAdmin = 0
+              AND id <> ?
+            ORDER BY name ASC
+            `,
+            [resolvedTmId]
+        );
+        return res.json(rows || []);
+    } catch (err) {
+        console.error(err);
+        return res.status(500).json({ error: 'Fetch chat users failed' });
+    }
+});
+
 app.get('/chat/messages', async (req, res) => {
     try {
         const sessionUser = req.session?.user;
@@ -81,21 +106,55 @@ app.get('/chat/messages', async (req, res) => {
         await ensureChatSchema();
         const limitRaw = Number(req.query?.limit);
         const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 300) : 100;
-        const [rows] = await pool.query(
-            `
-            SELECT
-                id,
-                sender_tm_id,
-                sender_name,
-                sender_role,
-                message,
-                created_at
-            FROM tm_chat_messages
-            ORDER BY id DESC
-            LIMIT ?
-            `,
-            [limit]
-        );
+        const targetTmId = Number(req.query?.targetTmId || 0);
+        const isGroup = !targetTmId;
+        let rows = [];
+        if (isGroup) {
+            const [groupRows] = await pool.query(
+                `
+                SELECT
+                    id,
+                    sender_tm_id,
+                    target_tm_id,
+                    is_group,
+                    sender_name,
+                    sender_role,
+                    message,
+                    created_at
+                FROM tm_chat_messages
+                WHERE is_group = 1
+                ORDER BY id DESC
+                LIMIT ?
+                `,
+                [limit]
+            );
+            rows = groupRows || [];
+        } else {
+            const [directRows] = await pool.query(
+                `
+                SELECT
+                    id,
+                    sender_tm_id,
+                    target_tm_id,
+                    is_group,
+                    sender_name,
+                    sender_role,
+                    message,
+                    created_at
+                FROM tm_chat_messages
+                WHERE is_group = 0
+                  AND (
+                    (sender_tm_id = ? AND target_tm_id = ?)
+                    OR
+                    (sender_tm_id = ? AND target_tm_id = ?)
+                  )
+                ORDER BY id DESC
+                LIMIT ?
+                `,
+                [resolvedTmId, targetTmId, targetTmId, resolvedTmId, limit]
+            );
+            rows = directRows || [];
+        }
         return res.json((rows || []).reverse());
     } catch (err) {
         console.error(err);
@@ -259,15 +318,41 @@ const ensureChatSchema = async () => {
                     CREATE TABLE tm_chat_messages (
                         id BIGINT NOT NULL AUTO_INCREMENT,
                         sender_tm_id BIGINT NOT NULL,
+                        target_tm_id BIGINT DEFAULT NULL,
+                        is_group TINYINT(1) NOT NULL DEFAULT 1,
                         sender_name VARCHAR(50) NOT NULL,
                         sender_role VARCHAR(20) NOT NULL,
                         message TEXT NOT NULL,
                         created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                         PRIMARY KEY (id),
                         KEY idx_tm_chat_created_at (created_at),
-                        KEY idx_tm_chat_sender (sender_tm_id, created_at)
+                        KEY idx_tm_chat_sender (sender_tm_id, created_at),
+                        KEY idx_tm_chat_target (target_tm_id, created_at),
+                        KEY idx_tm_chat_room (is_group, sender_tm_id, target_tm_id, created_at)
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
                 `);
+            } else {
+                const [columns] = await pool.query(`
+                    SELECT COLUMN_NAME
+                    FROM INFORMATION_SCHEMA.COLUMNS
+                    WHERE TABLE_SCHEMA = DATABASE()
+                      AND TABLE_NAME = 'tm_chat_messages'
+                `);
+                const has = new Set((columns || []).map((row) => row.COLUMN_NAME));
+                const alterParts = [];
+                if (!has.has('target_tm_id')) alterParts.push('ADD COLUMN target_tm_id BIGINT DEFAULT NULL AFTER sender_tm_id');
+                if (!has.has('is_group')) alterParts.push('ADD COLUMN is_group TINYINT(1) NOT NULL DEFAULT 1 AFTER target_tm_id');
+                if (alterParts.length > 0) {
+                    await pool.query(`ALTER TABLE tm_chat_messages ${alterParts.join(', ')}`);
+                }
+                const [indexes] = await pool.query(`SHOW INDEX FROM tm_chat_messages`);
+                const indexNames = new Set((indexes || []).map((row) => row.Key_name));
+                if (!indexNames.has('idx_tm_chat_target')) {
+                    await pool.query('ALTER TABLE tm_chat_messages ADD INDEX idx_tm_chat_target (target_tm_id, created_at)');
+                }
+                if (!indexNames.has('idx_tm_chat_room')) {
+                    await pool.query('ALTER TABLE tm_chat_messages ADD INDEX idx_tm_chat_room (is_group, sender_tm_id, target_tm_id, created_at)');
+                }
             }
         })().finally(() => {
             ensureChatSchemaPromise = null;
@@ -2835,13 +2920,32 @@ io.use((socket, next) => {
     return next();
 });
 
+const getSocketActor = (socket) => {
+    const sessionUser = socket.request?.session?.user;
+    const authTmId = Number(socket.handshake?.auth?.tmId || 0);
+    const senderTmId = Number(sessionUser?.id || 0) || authTmId;
+    const senderName = String(
+        sessionUser?.username ||
+        socket.handshake?.auth?.username ||
+        'Unknown'
+    );
+    const senderRole = socket.request?.session?.isAdmin || socket.handshake?.auth?.isAdmin
+        ? 'admin'
+        : 'tm';
+    return { senderTmId, senderName, senderRole };
+};
+
 io.on('connection', (socket) => {
+    const actor = getSocketActor(socket);
+    if (actor.senderTmId) {
+        socket.join('chat:group');
+        socket.join(`chat:user:${actor.senderTmId}`);
+    }
+
     socket.on('chat:send', async (payload, ack) => {
         try {
-            const sessionUser = socket.request?.session?.user;
-            const authTmId = Number(socket.handshake?.auth?.tmId || 0);
-            const resolvedTmId = Number(sessionUser?.id || 0) || authTmId;
-            if (!resolvedTmId) {
+            const currentActor = getSocketActor(socket);
+            if (!currentActor.senderTmId) {
                 if (typeof ack === 'function') ack({ ok: false, error: 'Unauthorized' });
                 return;
             }
@@ -2856,23 +2960,22 @@ io.on('connection', (socket) => {
                 return;
             }
 
-            const senderTmId = resolvedTmId;
-            const senderName = String(
-                sessionUser?.username ||
-                socket.handshake?.auth?.username ||
-                'Unknown'
-            );
-            const senderRole = socket.request?.session?.isAdmin || socket.handshake?.auth?.isAdmin
-                ? 'admin'
-                : 'tm';
+            const targetTmIdRaw = Number(payload?.targetTmId || 0);
+            const isGroup = !targetTmIdRaw;
+            const targetTmId = isGroup ? null : targetTmIdRaw;
+            if (!isGroup && targetTmId <= 0) {
+                if (typeof ack === 'function') ack({ ok: false, error: 'targetTmId is invalid' });
+                return;
+            }
+
             await ensureChatSchema();
             const [result] = await pool.query(
                 `
                 INSERT INTO tm_chat_messages (
-                    sender_tm_id, sender_name, sender_role, message
-                ) VALUES (?, ?, ?, ?)
+                    sender_tm_id, target_tm_id, is_group, sender_name, sender_role, message
+                ) VALUES (?, ?, ?, ?, ?, ?)
                 `,
-                [senderTmId, senderName, senderRole, message]
+                [currentActor.senderTmId, targetTmId, isGroup ? 1 : 0, currentActor.senderName, currentActor.senderRole, message]
             );
 
             const [rows] = await pool.query(
@@ -2880,6 +2983,8 @@ io.on('connection', (socket) => {
                 SELECT
                     id,
                     sender_tm_id,
+                    target_tm_id,
+                    is_group,
                     sender_name,
                     sender_role,
                     message,
@@ -2892,7 +2997,12 @@ io.on('connection', (socket) => {
             );
             const saved = rows?.[0];
             if (saved) {
-                io.emit('chat:new', saved);
+                if (Number(saved.is_group) === 1) {
+                    io.to('chat:group').emit('chat:new', saved);
+                } else {
+                    io.to(`chat:user:${saved.sender_tm_id}`).emit('chat:new', saved);
+                    io.to(`chat:user:${saved.target_tm_id}`).emit('chat:new', saved);
+                }
             }
             if (typeof ack === 'function') ack({ ok: true, data: saved || null });
         } catch (err) {
