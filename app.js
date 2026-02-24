@@ -1267,8 +1267,12 @@ app.patch('/tm/schedules/:id', async (req, res) => {
         customType,
         memo,
     } = req.body || {};
+    const requestedTmId = Number(tmId ?? req.query?.tmId);
     const sessionUser = req.session?.user || null;
     const sessionTmId = sessionUser?.id ? Number(sessionUser.id) : null;
+    const ownerTmId = !Number.isNaN(sessionTmId) && sessionTmId > 0
+        ? sessionTmId
+        : (!Number.isNaN(requestedTmId) && requestedTmId > 0 ? requestedTmId : null);
     const isAdmin = Boolean(req.session?.isAdmin);
 
     try {
@@ -1281,7 +1285,7 @@ app.patch('/tm/schedules/:id', async (req, res) => {
         if (!current) {
             return res.status(404).json({ error: 'Schedule not found' });
         }
-        if (!isAdmin && String(current.tm_id || '') !== String(sessionTmId || '')) {
+        if (!isAdmin && String(current.tm_id || '') !== String(ownerTmId || '')) {
             return res.status(403).json({ error: 'Only owner can edit this schedule' });
         }
 
@@ -1289,15 +1293,16 @@ app.patch('/tm/schedules/:id', async (req, res) => {
         const params = [];
 
         if (tmId !== undefined && tmId !== null && tmId !== '') {
-            if (!isAdmin) {
-                return res.status(403).json({ error: 'Only admin can change tmId' });
-            }
             const nextTmId = Number(tmId);
             if (Number.isNaN(nextTmId) || nextTmId <= 0) {
                 return res.status(400).json({ error: 'invalid tmId' });
             }
-            setParts.push('tm_id = ?');
-            params.push(nextTmId);
+            if (isAdmin) {
+                setParts.push('tm_id = ?');
+                params.push(nextTmId);
+            } else if (String(nextTmId) !== String(current.tm_id || '')) {
+                return res.status(403).json({ error: 'Only owner can edit this schedule' });
+            }
         }
 
         if (scheduleDate !== undefined) {
@@ -1356,8 +1361,12 @@ app.patch('/tm/schedules/:id', async (req, res) => {
 
 app.delete('/tm/schedules/:id', async (req, res) => {
     const { id } = req.params;
+    const requestedTmId = Number(req.body?.tmId ?? req.query?.tmId);
     const sessionUser = req.session?.user || null;
     const sessionTmId = sessionUser?.id ? Number(sessionUser.id) : null;
+    const ownerTmId = !Number.isNaN(sessionTmId) && sessionTmId > 0
+        ? sessionTmId
+        : (!Number.isNaN(requestedTmId) && requestedTmId > 0 ? requestedTmId : null);
     const isAdmin = Boolean(req.session?.isAdmin);
     try {
         await ensureTmScheduleSchema();
@@ -1369,7 +1378,7 @@ app.delete('/tm/schedules/:id', async (req, res) => {
         if (!current) {
             return res.status(404).json({ error: 'Schedule not found' });
         }
-        if (!isAdmin && String(current.tm_id || '') !== String(sessionTmId || '')) {
+        if (!isAdmin && String(current.tm_id || '') !== String(ownerTmId || '')) {
             return res.status(403).json({ error: 'Only owner can delete this schedule' });
         }
         await pool.query('DELETE FROM tm_schedule WHERE id = ?', [id]);
