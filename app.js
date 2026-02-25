@@ -553,15 +553,16 @@ const ensureChatSchema = async () => {
     return ensureChatSchemaPromise;
 };
 
-let ensureAdminAuditLogSchemaPromise = null;
-const ensureAdminAuditLogSchema = async () => {
-    if (!ensureAdminAuditLogSchemaPromise) {
-        ensureAdminAuditLogSchemaPromise = (async () => {
+let ensureActivityLogSchemaPromise = null;
+const ensureActivityLogSchema = async () => {
+    if (!ensureActivityLogSchemaPromise) {
+        ensureActivityLogSchemaPromise = (async () => {
             await pool.query(
                 `
-                CREATE TABLE IF NOT EXISTS admin_audit_logs (
+                CREATE TABLE IF NOT EXISTS activity_logs (
                     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-                    admin_tm_id BIGINT NULL,
+                    actor_tm_id BIGINT NULL,
+                    actor_role ENUM('ADMIN','TM','SYSTEM') NOT NULL,
                     action VARCHAR(64) NOT NULL,
                     target_type VARCHAR(64) NOT NULL,
                     target_id VARCHAR(128) NULL,
@@ -571,19 +572,20 @@ const ensureAdminAuditLogSchema = async () => {
                     user_agent VARCHAR(255) NULL,
                     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY (id),
-                    KEY idx_admin_tm_id (admin_tm_id),
-                    KEY idx_action (action),
-                    KEY idx_target_type (target_type),
-                    KEY idx_created_at (created_at)
+                    KEY idx_activity_created_at (created_at),
+                    KEY idx_activity_actor_tm_id (actor_tm_id),
+                    KEY idx_activity_actor_role (actor_role),
+                    KEY idx_activity_action (action),
+                    KEY idx_activity_target_type (target_type)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
                 `
             );
         })().catch((err) => {
-            ensureAdminAuditLogSchemaPromise = null;
+            ensureActivityLogSchemaPromise = null;
             throw err;
         });
     }
-    return ensureAdminAuditLogSchemaPromise;
+    return ensureActivityLogSchemaPromise;
 };
 
 const parseLocalDateTimeString = (value) => {
@@ -819,46 +821,42 @@ const safeJson = (value) => {
     }
 };
 
-const writeAdminAuditLog = async (req, action, targetType, targetId, beforeValue, afterValue) => {
+const writeActivityLog = async (req, actorRole, action, targetType, targetId, beforeValue, afterValue) => {
     try {
-        await ensureAdminAuditLogSchema();
-        const auditCols = await describeTable('admin_audit_logs');
-        const adminTmId = getSessionTmId(req);
-        if (!adminTmId) return;
-        const ipCol = auditCols.includes('ip') ? 'ip' : (auditCols.includes('ip_address') ? 'ip_address' : null);
-        const userAgentCol = auditCols.includes('user_agent') ? 'user_agent' : null;
-        const colNames = ['admin_tm_id', 'action', 'target_type', 'target_id', 'before_json', 'after_json'];
-        const values = ['?', '?', '?', '?', '?', '?'];
+        await ensureActivityLogSchema();
+        const actorTmId = getSessionTmId(req);
+        if (!actorTmId && String(actorRole) !== 'SYSTEM') return;
+        const colNames = ['actor_tm_id', 'actor_role', 'action', 'target_type', 'target_id', 'before_json', 'after_json', 'ip_address', 'user_agent'];
+        const values = ['?', '?', '?', '?', '?', '?', '?', '?', '?'];
         const params = [
-            adminTmId,
+            actorTmId,
+            String(actorRole || 'SYSTEM'),
             String(action || ''),
             String(targetType || ''),
             targetId === undefined || targetId === null ? null : String(targetId),
             safeJson(beforeValue),
             safeJson(afterValue),
+            String(req.headers['x-forwarded-for'] || req.ip || '').slice(0, 64),
+            String(req.headers['user-agent'] || '').slice(0, 255),
         ];
-        if (ipCol) {
-            colNames.push(ipCol);
-            values.push('?');
-            params.push(String(req.headers['x-forwarded-for'] || req.ip || '').slice(0, 64));
-        }
-        if (userAgentCol) {
-            colNames.push(userAgentCol);
-            values.push('?');
-            params.push(String(req.headers['user-agent'] || '').slice(0, 255));
-        }
         await pool.query(
             `
-            INSERT INTO admin_audit_logs (
+            INSERT INTO activity_logs (
                 ${colNames.join(', ')}
             ) VALUES (${values.join(', ')})
             `,
             params
         );
     } catch (err) {
-        console.error('[audit] write failed:', err?.message || err);
+        console.error('[activity-log] write failed:', err?.message || err);
     }
 };
+
+const writeAdminAuditLog = async (req, action, targetType, targetId, beforeValue, afterValue) =>
+    writeActivityLog(req, 'ADMIN', action, targetType, targetId, beforeValue, afterValue);
+
+const writeTmAuditLog = async (req, action, targetType, targetId, beforeValue, afterValue) =>
+    writeActivityLog(req, 'TM', action, targetType, targetId, beforeValue, afterValue);
 
 const normalizePhoneDigits = (value) => {
     if (!value) return '';
@@ -1541,6 +1539,12 @@ app.post('/tm/schedules', async (req, res) => {
                 sessionTmId || null,
             ]
         );
+        const [afterRows] = await pool.query('SELECT * FROM tm_schedule WHERE id = ? LIMIT 1', [result.insertId]);
+        if (isAdmin) {
+            await writeAdminAuditLog(req, 'TM_SCHEDULE_CREATE', 'tm_schedule', result.insertId, null, afterRows?.[0] || null);
+        } else {
+            await writeTmAuditLog(req, 'TM_SCHEDULE_CREATE', 'tm_schedule', result.insertId, null, afterRows?.[0] || null);
+        }
         return res.json({ ok: true, id: result.insertId });
     } catch (err) {
         console.error(err);
@@ -1757,16 +1761,11 @@ app.patch('/tm/schedules/:id', async (req, res) => {
             `UPDATE tm_schedule SET ${setParts.join(', ')} WHERE id = ?`,
             params
         );
+        const [afterRows] = await pool.query('SELECT * FROM tm_schedule WHERE id = ? LIMIT 1', [id]);
         if (isAdmin) {
-            const [afterRows] = await pool.query('SELECT * FROM tm_schedule WHERE id = ? LIMIT 1', [id]);
-            await writeAdminAuditLog(
-                req,
-                'TM_SCHEDULE_UPDATE',
-                'tm_schedule',
-                id,
-                current,
-                afterRows?.[0] || null
-            );
+            await writeAdminAuditLog(req, 'TM_SCHEDULE_UPDATE', 'tm_schedule', id, current, afterRows?.[0] || null);
+        } else {
+            await writeTmAuditLog(req, 'TM_SCHEDULE_UPDATE', 'tm_schedule', id, current, afterRows?.[0] || null);
         }
         return res.json({ ok: true });
     } catch (err) {
@@ -1796,9 +1795,8 @@ app.delete('/tm/schedules/:id', async (req, res) => {
             return res.status(403).json({ error: 'Only owner can delete this schedule' });
         }
         await pool.query('DELETE FROM tm_schedule WHERE id = ?', [id]);
-        if (isAdmin) {
-            await writeAdminAuditLog(req, 'TM_SCHEDULE_DELETE', 'tm_schedule', id, current, null);
-        }
+        if (isAdmin) await writeAdminAuditLog(req, 'TM_SCHEDULE_DELETE', 'tm_schedule', id, current, null);
+        else await writeTmAuditLog(req, 'TM_SCHEDULE_DELETE', 'tm_schedule', id, current, null);
         return res.json({ ok: true });
     } catch (err) {
         console.error(err);
@@ -1950,10 +1948,7 @@ app.patch('/tm/memos/:id', async (req, res) => {
     }
 
     try {
-        const [rows] = await pool.query(
-            'SELECT id, tm_id FROM tm_memos WHERE id = ? LIMIT 1',
-            [id]
-        );
+        const [rows] = await pool.query('SELECT * FROM tm_memos WHERE id = ? LIMIT 1', [id]);
         const memo = rows[0];
         if (!memo) {
             return res.status(404).json({ error: 'Memo not found' });
@@ -1962,11 +1957,9 @@ app.patch('/tm/memos/:id', async (req, res) => {
             return res.status(403).json({ error: 'Only author can edit this memo' });
         }
 
-        await pool.query(
-            'UPDATE tm_memos SET memo_content = ? WHERE id = ?',
-            [String(memoContent).trim(), id]
-        );
-
+        await pool.query('UPDATE tm_memos SET memo_content = ? WHERE id = ?', [String(memoContent).trim(), id]);
+        const [afterRows] = await pool.query('SELECT * FROM tm_memos WHERE id = ? LIMIT 1', [id]);
+        await writeTmAuditLog(req, 'TM_MEMO_UPDATE', 'tm_memos', id, memo, afterRows?.[0] || null);
         return res.json({ ok: true });
     } catch (err) {
         console.error(err);
@@ -1990,10 +1983,11 @@ app.post('/tm/leads/:id/update', async (req, res) => {
 
     try {
         await ensureRecallColumns();
-        const [rows] = await pool.query('SELECT 상태, 예약_내원일시, 연락처 FROM tm_leads WHERE id = ?', [id]);
-        const currentStatus = rows[0]?.상태 ?? null;
-        const currentReservationAt = rows[0]?.예약_내원일시 ?? null;
-        const currentPhone = rows[0]?.연락처 ?? '';
+        const [rows] = await pool.query('SELECT * FROM tm_leads WHERE id = ?', [id]);
+        const beforeLead = rows[0] || null;
+        const currentStatus = beforeLead?.상태 ?? null;
+        const currentReservationAt = beforeLead?.예약_내원일시 ?? null;
+        const currentPhone = beforeLead?.연락처 ?? '';
         const statusProvided = status !== undefined;
         const statusChanged = statusProvided && status !== currentStatus;
         const nextStatus = statusProvided ? status : currentStatus;
@@ -2076,6 +2070,8 @@ app.post('/tm/leads/:id/update', async (req, res) => {
         if (result.affectedRows === 0) {
             return res.status(404).json({ error: 'Lead not found' });
         }
+        const [afterLeadRows] = await pool.query('SELECT * FROM tm_leads WHERE id = ?', [id]);
+        await writeTmAuditLog(req, 'TM_LEAD_UPDATE', 'tm_leads', id, beforeLead, afterLeadRows?.[0] || null);
 
         const shouldAutoStatusMemo = statusChanged && ['예약부도', '내원완료'].includes(String(nextStatus || '').trim());
         const finalMemoText = String(memo || '').trim() || (shouldAutoStatusMemo ? String(nextStatus || '').trim() : '');
@@ -3186,7 +3182,6 @@ app.post('/admin/leads/:id/update', async (req, res) => {
         if (result.affectedRows === 0) {
             return res.status(404).json({ error: 'Lead not found' });
         }
-
         const [afterLeadRows] = await pool.query('SELECT * FROM tm_leads WHERE id = ?', [id]);
         const afterLead = afterLeadRows?.[0] || null;
         await writeAdminAuditLog(req, 'LEAD_UPDATE', 'tm_leads', id, beforeLead, afterLead);
@@ -3346,11 +3341,12 @@ app.delete('/admin/event-rules/:id', async (req, res) => {
 app.get('/admin/audit-logs', async (req, res) => {
     if (!(await requireAdminApi(req, res))) return;
     try {
-        await ensureAdminAuditLogSchema();
+        await ensureActivityLogSchema();
         const {
             action = '',
             targetType = '',
             adminTmId = '',
+            actorRole = '',
             limit = '100',
         } = req.query || {};
         const limitNum = Math.max(1, Math.min(500, Number(limit) || 100));
@@ -3365,30 +3361,31 @@ app.get('/admin/audit-logs', async (req, res) => {
             params.push(String(targetType).trim());
         }
         if (String(adminTmId).trim()) {
-            where.push('l.admin_tm_id = ?');
+            where.push('l.actor_tm_id = ?');
             params.push(String(adminTmId).trim());
         }
+        if (String(actorRole).trim()) {
+            where.push('l.actor_role = ?');
+            params.push(String(actorRole).trim().toUpperCase());
+        }
         const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
-        const auditCols = await describeTable('admin_audit_logs');
-        const ipSelectExpr = auditCols.includes('ip_address')
-            ? 'l.ip_address'
-            : (auditCols.includes('ip') ? 'l.ip' : 'NULL');
         const [rows] = await pool.query(
             `
             SELECT
                 l.id,
-                l.admin_tm_id,
+                l.actor_tm_id AS admin_tm_id,
                 t.name AS admin_name,
+                l.actor_role,
                 l.action,
                 l.target_type,
                 l.target_id,
                 l.before_json,
                 l.after_json,
-                ${ipSelectExpr} AS ip_address,
+                l.ip_address AS ip_address,
                 l.user_agent,
                 l.created_at
-            FROM admin_audit_logs l
-            LEFT JOIN tm t ON t.id = l.admin_tm_id
+            FROM activity_logs l
+            LEFT JOIN tm t ON t.id = l.actor_tm_id
             ${whereSql}
             ORDER BY l.id DESC
             LIMIT ?
@@ -3617,10 +3614,7 @@ app.delete('/tm/memos/:id', async (req, res) => {
     }
 
     try {
-        const [rows] = await pool.query(
-            'SELECT id, tm_id FROM tm_memos WHERE id = ? LIMIT 1',
-            [id]
-        );
+        const [rows] = await pool.query('SELECT * FROM tm_memos WHERE id = ? LIMIT 1', [id]);
         const memo = rows[0];
         if (!memo) {
             return res.status(404).json({ error: 'Memo not found' });
@@ -3630,6 +3624,7 @@ app.delete('/tm/memos/:id', async (req, res) => {
         }
 
         await pool.query('DELETE FROM tm_memos WHERE id = ?', [id]);
+        await writeTmAuditLog(req, 'TM_MEMO_DELETE', 'tm_memos', id, memo, null);
         return res.json({ ok: true });
     } catch (err) {
         console.error(err);
