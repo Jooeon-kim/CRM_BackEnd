@@ -244,23 +244,53 @@ app.get('/chat/lead/:id', async (req, res) => {
             return res.status(404).json({ error: 'Lead not found' });
         }
 
-        const [memoRows] = await pool.query(
-            `
-            SELECT
-                m.id,
-                m.memo_time,
-                m.memo_content,
-                m.status_tag,
-                m.status_reservation_at,
-                m.tm_id,
-                t.name AS tm_name
-            FROM tm_memos m
-            LEFT JOIN tm t ON t.id = m.tm_id
-            WHERE m.tm_lead_id = ?
-            ORDER BY m.memo_time DESC, m.id DESC
-            `,
-            [leadId]
-        );
+        let normalizedPhone = String(leadRows[0]?.phone || '').replace(/\D/g, '');
+        if (normalizedPhone.startsWith('82')) {
+            normalizedPhone = `0${normalizedPhone.slice(2)}`;
+        }
+        const normalizePhoneSql = (col) => `
+            REPLACE(
+                REPLACE(
+                    REPLACE(
+                        REPLACE(
+                            REPLACE(
+                                REPLACE(LOWER(${col}), 'p:', ''),
+                            '-', ''),
+                        ' ', ''),
+                    '+82', '0'),
+                '(', ''),
+            ')', '')
+        `;
+        const memoSql = normalizedPhone
+            ? `
+              SELECT
+                  m.id,
+                  m.memo_time,
+                  m.memo_content,
+                  m.status_tag,
+                  m.status_reservation_at,
+                  m.tm_id,
+                  t.name AS tm_name
+              FROM tm_memos m
+              LEFT JOIN tm t ON t.id = m.tm_id
+              WHERE ${normalizePhoneSql('m.target_phone')} = ?
+              ORDER BY m.memo_time DESC, m.id DESC
+              `
+            : `
+              SELECT
+                  m.id,
+                  m.memo_time,
+                  m.memo_content,
+                  m.status_tag,
+                  m.status_reservation_at,
+                  m.tm_id,
+                  t.name AS tm_name
+              FROM tm_memos m
+              LEFT JOIN tm t ON t.id = m.tm_id
+              WHERE m.tm_lead_id = ?
+              ORDER BY m.memo_time DESC, m.id DESC
+              `;
+        const [memoRows] = await pool.query(memoSql, [normalizedPhone || leadId]);
 
         return res.json({
             lead: leadRows[0],
