@@ -1892,7 +1892,18 @@ app.post('/tm/leads/:id/update', async (req, res) => {
                 ? (normalizeDateTimeForDb(effectiveReservationAt) || null)
                 : null;
             await pool.query(
-                'INSERT INTO tm_memos (memo_content, status_tag, status_reservation_at, target_phone, tm_id, tm_lead_id) VALUES (?, ?, ?, ?, ?, ?)',
+                `INSERT INTO tm_memos (
+                    memo_time,
+                    memo_content,
+                    status_tag,
+                    status_reservation_at,
+                    target_phone,
+                    tm_id,
+                    tm_lead_id
+                ) VALUES (
+                    ${KST_NOW_SQL},
+                    ?, ?, ?, ?, ?, ?
+                )`,
                 [finalMemoText, memoStatusTag, memoStatusReservationAt, req.body.phone || currentPhone || '', tmId, id]
             );
         }
@@ -2982,7 +2993,18 @@ app.post('/admin/leads/:id/update', async (req, res) => {
                 ? (normalizeDateTimeForDb(effectiveReservationAt) || null)
                 : null;
             await pool.query(
-                'INSERT INTO tm_memos (memo_content, status_tag, status_reservation_at, target_phone, tm_id, tm_lead_id) VALUES (?, ?, ?, ?, ?, ?)',
+                `INSERT INTO tm_memos (
+                    memo_time,
+                    memo_content,
+                    status_tag,
+                    status_reservation_at,
+                    target_phone,
+                    tm_id,
+                    tm_lead_id
+                ) VALUES (
+                    ${KST_NOW_SQL},
+                    ?, ?, ?, ?, ?, ?
+                )`,
                 [finalMemoText, memoStatusTag, memoStatusReservationAt, req.body.phone || currentPhone || '', tmId || 0, id]
             );
         }
