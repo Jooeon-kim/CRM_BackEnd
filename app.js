@@ -1894,6 +1894,7 @@ app.post('/tm/leads/:id/update', async (req, res) => {
             await pool.query(
                 `INSERT INTO tm_memos (
                     memo_time,
+                    created_at,
                     memo_content,
                     status_tag,
                     status_reservation_at,
@@ -1901,6 +1902,7 @@ app.post('/tm/leads/:id/update', async (req, res) => {
                     tm_id,
                     tm_lead_id
                 ) VALUES (
+                    ${KST_NOW_SQL},
                     ${KST_NOW_SQL},
                     ?, ?, ?, ?, ?, ?
                 )`,
@@ -2995,6 +2997,7 @@ app.post('/admin/leads/:id/update', async (req, res) => {
             await pool.query(
                 `INSERT INTO tm_memos (
                     memo_time,
+                    created_at,
                     memo_content,
                     status_tag,
                     status_reservation_at,
@@ -3002,6 +3005,7 @@ app.post('/admin/leads/:id/update', async (req, res) => {
                     tm_id,
                     tm_lead_id
                 ) VALUES (
+                    ${KST_NOW_SQL},
                     ${KST_NOW_SQL},
                     ?, ?, ?, ?, ?, ?
                 )`,
