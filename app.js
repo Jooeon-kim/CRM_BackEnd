@@ -491,7 +491,11 @@ const ensureCompanyScheduleSchema = async () => {
 };
 
 let ensureChatSchemaPromise = null;
+let isChatSchemaEnsured = false;
 const ensureChatSchema = async () => {
+    if (isChatSchemaEnsured) {
+        return;
+    }
     if (!ensureChatSchemaPromise) {
         ensureChatSchemaPromise = (async () => {
             const [tables] = await pool.query(`
@@ -547,8 +551,10 @@ const ensureChatSchema = async () => {
                     await pool.query('ALTER TABLE tm_chat_messages ADD INDEX idx_tm_chat_room (is_group, sender_tm_id, target_tm_id, created_at)');
                 }
             }
-        })().finally(() => {
+            isChatSchemaEnsured = true;
+        })().catch((err) => {
             ensureChatSchemaPromise = null;
+            throw err;
         });
     }
     return ensureChatSchemaPromise;
