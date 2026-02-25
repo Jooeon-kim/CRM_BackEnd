@@ -1259,7 +1259,6 @@ app.get('/tm/assign/summary', async (req, res) => {
 });
 
 app.get('/tm/agents', async (req, res) => {
-    if (!(await requireAdminApi(req, res))) return;
     try {
         const [rows] = await pool.query('SELECT id, name, phone, last_login_at, isAdmin FROM tm ORDER BY name');
         res.json(rows);
