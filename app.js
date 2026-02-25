@@ -553,6 +553,39 @@ const ensureChatSchema = async () => {
     return ensureChatSchemaPromise;
 };
 
+let ensureAdminAuditLogSchemaPromise = null;
+const ensureAdminAuditLogSchema = async () => {
+    if (!ensureAdminAuditLogSchemaPromise) {
+        ensureAdminAuditLogSchemaPromise = (async () => {
+            await pool.query(
+                `
+                CREATE TABLE IF NOT EXISTS admin_audit_logs (
+                    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+                    admin_tm_id BIGINT NULL,
+                    action VARCHAR(64) NOT NULL,
+                    target_type VARCHAR(64) NOT NULL,
+                    target_id VARCHAR(128) NULL,
+                    before_json JSON NULL,
+                    after_json JSON NULL,
+                    ip_address VARCHAR(64) NULL,
+                    user_agent VARCHAR(255) NULL,
+                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (id),
+                    KEY idx_admin_tm_id (admin_tm_id),
+                    KEY idx_action (action),
+                    KEY idx_target_type (target_type),
+                    KEY idx_created_at (created_at)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+                `
+            );
+        })().catch((err) => {
+            ensureAdminAuditLogSchemaPromise = null;
+            throw err;
+        });
+    }
+    return ensureAdminAuditLogSchemaPromise;
+};
+
 const parseLocalDateTimeString = (value) => {
     if (value === undefined || value === null || value === '') return null;
     const raw = String(value).trim().replace('T', ' ');
@@ -788,6 +821,7 @@ const safeJson = (value) => {
 
 const writeAdminAuditLog = async (req, action, targetType, targetId, beforeValue, afterValue) => {
     try {
+        await ensureAdminAuditLogSchema();
         const adminTmId = getSessionTmId(req);
         if (!adminTmId) return;
         await pool.query(
@@ -3305,6 +3339,7 @@ app.delete('/admin/event-rules/:id', async (req, res) => {
 app.get('/admin/audit-logs', async (req, res) => {
     if (!(await requireAdminApi(req, res))) return;
     try {
+        await ensureAdminAuditLogSchema();
         const {
             action = '',
             targetType = '',
