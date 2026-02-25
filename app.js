@@ -1354,8 +1354,8 @@ app.post('/tm/schedules', async (req, res) => {
         const [result] = await pool.query(
             `
             INSERT INTO tm_schedule (
-                tm_id, schedule_date, schedule_type, custom_type, memo, created_by
-            ) VALUES (?, ?, ?, ?, ?, ?)
+                tm_id, schedule_date, schedule_type, custom_type, memo, created_by, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ${KST_NOW_SQL}, ${KST_NOW_SQL})
             `,
             [
                 targetTmId,
@@ -1577,6 +1577,7 @@ app.patch('/tm/schedules/:id', async (req, res) => {
             return res.status(400).json({ error: 'No fields to update' });
         }
 
+        setParts.push(`updated_at = ${KST_NOW_SQL}`);
         params.push(id);
         await pool.query(
             `UPDATE tm_schedule SET ${setParts.join(', ')} WHERE id = ?`,
