@@ -1087,14 +1087,52 @@ app.get('/tm/leads', async (req, res) => {
                 });
             }
 
+            const phoneColumnExpr = map.phone ? `l.\`${map.phone}\`` : 'NULL';
+            const eventColumnExpr = map.event ? `l.\`${map.event}\`` : 'NULL';
+            const idColumnExpr = map.id ? `l.\`${map.id}\`` : 'NULL';
+            const inboundColumnExpr = map.inboundDate ? `l.\`${map.inboundDate}\`` : null;
+            const eventOrderExpr = inboundColumnExpr
+                ? `${inboundColumnExpr} DESC, ${idColumnExpr} DESC`
+                : `${idColumnExpr} DESC`;
+            const [eventRows] = await pool.query(
+                `
+                SELECT
+                  ${normalizePhoneSql(phoneColumnExpr)} AS phone_key,
+                  ${idColumnExpr} AS lead_id,
+                  ${eventColumnExpr} AS event_name
+                FROM tm_leads l
+                WHERE ${normalizePhoneSql(phoneColumnExpr)} IN (${placeholders})
+                ORDER BY ${eventOrderExpr}
+                `,
+                phoneKeys
+            );
+
+            const phoneEventMap = new Map();
+            for (const row of (eventRows || [])) {
+                const key = String(row.phone_key || '');
+                if (!key) continue;
+                const bucket = phoneEventMap.get(key) || [];
+                bucket.push({
+                    leadId: row.lead_id,
+                    eventName: row.event_name || '',
+                });
+                phoneEventMap.set(key, bucket);
+            }
+
             leads = leads.map((lead) => {
                 const key = normalizePhoneDigits(lead?.phone);
                 const dup = phoneMemoMap.get(key);
+                const eventCandidates = phoneEventMap.get(key) || [];
+                const previousEvent = (
+                    eventCandidates.find((row) => String(row.leadId) !== String(lead.id) && String(row.eventName || '').trim())
+                    || { eventName: '' }
+                ).eventName;
                 return {
                     ...lead,
                     duplicateMemoTmName: dup?.tmName || '',
                     duplicateMemoContent: dup?.memoContent || '',
                     duplicateMemoTime: dup?.memoTime || null,
+                    duplicatePreviousEvent: previousEvent || '',
                 };
             });
         }
