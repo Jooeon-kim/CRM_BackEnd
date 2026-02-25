@@ -1326,7 +1326,7 @@ app.post('/tm/schedules', async (req, res) => {
     } = req.body || {};
     const sessionUser = req.session?.user || null;
     const sessionTmId = sessionUser?.id ? Number(sessionUser.id) : null;
-    const isAdmin = Boolean(req.session?.isAdmin);
+    const isAdmin = await ensureAdminRequest(req);
     const requestedTmId = Number(tmId);
     const targetTmId = isAdmin
         ? (Number.isNaN(requestedTmId) ? null : requestedTmId)
@@ -1507,7 +1507,7 @@ app.patch('/tm/schedules/:id', async (req, res) => {
     const ownerTmId = !Number.isNaN(sessionTmId) && sessionTmId > 0
         ? sessionTmId
         : (!Number.isNaN(requestedTmId) && requestedTmId > 0 ? requestedTmId : null);
-    const isAdmin = Boolean(req.session?.isAdmin);
+    const isAdmin = await ensureAdminRequest(req);
 
     try {
         await ensureTmScheduleSchema();
@@ -1602,7 +1602,7 @@ app.delete('/tm/schedules/:id', async (req, res) => {
     const ownerTmId = !Number.isNaN(sessionTmId) && sessionTmId > 0
         ? sessionTmId
         : (!Number.isNaN(requestedTmId) && requestedTmId > 0 ? requestedTmId : null);
-    const isAdmin = Boolean(req.session?.isAdmin);
+    const isAdmin = await ensureAdminRequest(req);
     try {
         await ensureTmScheduleSchema();
         const [rows] = await pool.query(
