@@ -1,5 +1,7 @@
 ﻿const express = require('express');
 const session = require('express-session');
+const { RedisStore } = require('connect-redis');
+const { createClient } = require('redis');
 const cors = require('cors');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -36,6 +38,32 @@ app.use(express.urlencoded({ extended: false }));
 const rawSameSite = String(process.env.COOKIE_SAMESITE || (process.env.CORS_ORIGIN ? 'none' : 'lax')).toLowerCase();
 const cookieSameSite = ['lax', 'strict', 'none'].includes(rawSameSite) ? rawSameSite : 'lax';
 const cookieSecure = process.env.NODE_ENV === 'production' || cookieSameSite === 'none';
+let redisClient = null;
+let sessionStore = null;
+const redisUrl = String(process.env.REDIS_URL || '').trim();
+if (redisUrl) {
+    try {
+        redisClient = createClient({ url: redisUrl });
+        redisClient.on('error', (err) => {
+            console.error('[session][redis] client error:', err?.message || err);
+        });
+        redisClient.connect()
+            .then(() => {
+                console.log('[session][redis] connected');
+            })
+            .catch((err) => {
+                console.error('[session][redis] connect failed, fallback may be required:', err?.message || err);
+            });
+        sessionStore = new RedisStore({
+            client: redisClient,
+            prefix: 'crm:sess:'
+        });
+    } catch (err) {
+        console.error('[session][redis] init failed:', err?.message || err);
+        redisClient = null;
+        sessionStore = null;
+    }
+}
 
 const sessionMiddleware = session({
     name: 'sid',
@@ -43,6 +71,7 @@ const sessionMiddleware = session({
     resave: false,
     saveUninitialized: false,
     proxy: true,
+    store: sessionStore || undefined,
     cookie: {
         httpOnly: true,
         sameSite: cookieSameSite,
