@@ -736,6 +736,15 @@ const formatPhone = (value) => {
     return String(value);
 };
 
+const normalizePhoneDigits = (value) => {
+    if (!value) return '';
+    let digits = String(value).replace(/\D/g, '');
+    if (digits.startsWith('82')) {
+        digits = `0${digits.slice(2)}`;
+    }
+    return digits;
+};
+
 const REPORT_METRIC_TYPES = new Set(['MISSED', 'RESERVED', 'VISIT_TODAY', 'VISIT_NEXTDAY', 'FAILED', 'RECALL_WAIT']);
 
 const toDateKey = (value) => {
@@ -1031,6 +1040,68 @@ app.get('/tm/leads', async (req, res) => {
                 const bTime = new Date(b.inboundDate).getTime();
                 if (Number.isNaN(aTime) || Number.isNaN(bTime)) return 0;
                 return bTime - aTime;
+            });
+        }
+
+        const phoneKeys = Array.from(
+            new Set(
+                (leads || [])
+                    .map((lead) => normalizePhoneDigits(lead?.phone))
+                    .filter(Boolean)
+            )
+        );
+
+        if (phoneKeys.length > 0) {
+            const normalizePhoneSql = (col) => `
+                REPLACE(
+                    REPLACE(
+                        REPLACE(
+                            REPLACE(
+                                REPLACE(
+                                    REPLACE(LOWER(${col}), 'p:', ''),
+                                '-', ''),
+                            ' ', ''),
+                        '+82', '0'),
+                    '(', ''),
+                ')', '')
+            `;
+            const placeholders = phoneKeys.map(() => '?').join(', ');
+            const [memoRows] = await pool.query(
+                `
+                SELECT
+                  ${normalizePhoneSql('m.target_phone')} AS phone_key,
+                  m.memo_content,
+                  m.memo_time,
+                  m.id,
+                  t.name AS tm_name
+                FROM tm_memos m
+                LEFT JOIN tm t ON t.id = m.tm_id
+                WHERE ${normalizePhoneSql('m.target_phone')} IN (${placeholders})
+                ORDER BY m.memo_time DESC, m.id DESC
+                `,
+                phoneKeys
+            );
+
+            const phoneMemoMap = new Map();
+            for (const row of (memoRows || [])) {
+                const key = String(row.phone_key || '');
+                if (!key || phoneMemoMap.has(key)) continue;
+                phoneMemoMap.set(key, {
+                    tmName: row.tm_name || '',
+                    memoContent: row.memo_content || '',
+                    memoTime: row.memo_time || null,
+                });
+            }
+
+            leads = leads.map((lead) => {
+                const key = normalizePhoneDigits(lead?.phone);
+                const dup = phoneMemoMap.get(key);
+                return {
+                    ...lead,
+                    duplicateMemoTmName: dup?.tmName || '',
+                    duplicateMemoContent: dup?.memoContent || '',
+                    duplicateMemoTime: dup?.memoTime || null,
+                };
             });
         }
 
