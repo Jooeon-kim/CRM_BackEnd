@@ -3644,6 +3644,8 @@ const io = new Server(server, {
         },
         credentials: true,
     },
+    transports: ['websocket'],
+    allowUpgrades: false,
 });
 
 io.use((socket, next) => {
@@ -3778,6 +3780,7 @@ io.on('connection', (socket) => {
 server.listen(3000, () => {
     console.log('서버가 3000번 포트에서 실행중입니다.');
 });
+
 
 
 
