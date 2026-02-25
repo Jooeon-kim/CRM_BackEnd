@@ -7,6 +7,7 @@ require('dotenv').config();
 const pool = require('./db');
 
 const app = express();
+app.set('trust proxy', 1);
 const normalizeOrigin = (value) => String(value || '')
     .trim()
     .replace(/^"+|"+$/g, '')
@@ -32,15 +33,20 @@ app.use(cors({
 }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
+const rawSameSite = String(process.env.COOKIE_SAMESITE || (process.env.CORS_ORIGIN ? 'none' : 'lax')).toLowerCase();
+const cookieSameSite = ['lax', 'strict', 'none'].includes(rawSameSite) ? rawSameSite : 'lax';
+const cookieSecure = process.env.NODE_ENV === 'production' || cookieSameSite === 'none';
+
 const sessionMiddleware = session({
     name: 'sid',
     secret: process.env.SESSION_SECRET || 'F8v!q2Kz9@Lm4#Nx7$Rp1^Tg6&Hy3*Ud5+Wm8?Sa',
     resave: false,
     saveUninitialized: false,
+    proxy: true,
     cookie: {
         httpOnly: true,
-        sameSite: process.env.COOKIE_SAMESITE || (process.env.CORS_ORIGIN ? 'none' : 'lax'),
-        secure: process.env.NODE_ENV === 'production' || process.env.COOKIE_SAMESITE === 'none',
+        sameSite: cookieSameSite,
+        secure: cookieSecure,
         maxAge: 1000 * 60 * 60
     }
 });

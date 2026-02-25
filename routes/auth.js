@@ -6,6 +6,9 @@ const pool = require('../db');
 const router = express.Router();
 
 const ADMIN_COOKIE_NAME = process.env.ADMIN_COOKIE_NAME || 'admin_token';
+const rawSameSite = String(process.env.COOKIE_SAMESITE || (process.env.CORS_ORIGIN ? 'none' : 'lax')).toLowerCase();
+const cookieSameSite = ['lax', 'strict', 'none'].includes(rawSameSite) ? rawSameSite : 'lax';
+const cookieSecure = process.env.NODE_ENV === 'production' || cookieSameSite === 'none';
 
 const wantsJson = (req) => {
     const accept = req.headers.accept || '';
@@ -101,8 +104,9 @@ router.post('/login', async (req, res) => {
             req.session.adminCookie = token;
             res.cookie(ADMIN_COOKIE_NAME, token, {
                 httpOnly: true,
-                sameSite: 'lax',
-                secure: process.env.NODE_ENV === 'production',
+                sameSite: cookieSameSite,
+                secure: cookieSecure,
+                path: '/',
                 maxAge: 1000 * 60 * 60
             });
         }
@@ -137,8 +141,18 @@ router.post('/login', async (req, res) => {
 router.post('/logout', (req, res) => {
     const cookieName = ADMIN_COOKIE_NAME;
     req.session.destroy(() => {
-        res.clearCookie('sid');
-        res.clearCookie(cookieName);
+        res.clearCookie('sid', {
+            httpOnly: true,
+            sameSite: cookieSameSite,
+            secure: cookieSecure,
+            path: '/'
+        });
+        res.clearCookie(cookieName, {
+            httpOnly: true,
+            sameSite: cookieSameSite,
+            secure: cookieSecure,
+            path: '/'
+        });
         res.send('로그아웃 완료');
     });
 });
