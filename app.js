@@ -1041,6 +1041,76 @@ app.get('/tm/leads', async (req, res) => {
     }
 });
 
+app.get('/tm/assign/summary', async (req, res) => {
+    try {
+        await ensureLeadAssignedDateColumn();
+        const columns = await describeTable('tm_leads');
+        const assignCol = pickColumn(columns, ['tm_id', 'tmid', 'assigned_tm_id', 'assigned_tm', 'tm']);
+        const assignedAtCol = pickColumn(columns, ['배정날짜', 'assigned_at', 'assigned_date', 'tm_assigned_at']);
+
+        if (!assignCol) {
+            return res.status(500).json({ error: 'tm_leads assignment column not found' });
+        }
+
+        const [agentRows] = await pool.query(
+            'SELECT id, name FROM tm WHERE COALESCE(isAdmin, 0) = 0 ORDER BY name ASC'
+        );
+
+        const todayExpr = assignedAtCol
+            ? `SUM(CASE WHEN \`${assignedAtCol}\` IS NOT NULL
+                          AND DATE(DATE_ADD(\`${assignedAtCol}\`, INTERVAL 9 HOUR)) = DATE(DATE_ADD(UTC_TIMESTAMP(), INTERVAL 9 HOUR))
+                        THEN 1 ELSE 0 END) AS today_count`
+            : '0 AS today_count';
+
+        const [countRows] = await pool.query(
+            `
+            SELECT
+              CAST(\`${assignCol}\` AS CHAR) AS tm_key,
+              COUNT(*) AS total_count,
+              ${todayExpr}
+            FROM tm_leads
+            WHERE \`${assignCol}\` IS NOT NULL
+              AND TRIM(CAST(\`${assignCol}\` AS CHAR)) <> ''
+            GROUP BY CAST(\`${assignCol}\` AS CHAR)
+            `
+        );
+
+        const countMap = new Map(
+            (countRows || []).map((row) => [
+                String(row.tm_key),
+                {
+                    totalCount: Number(row.total_count || 0),
+                    todayCount: Number(row.today_count || 0),
+                },
+            ])
+        );
+
+        const rows = (agentRows || []).map((agent) => {
+            const key = String(agent.id);
+            const hit = countMap.get(key) || { totalCount: 0, todayCount: 0 };
+            return {
+                tmId: agent.id,
+                name: agent.name,
+                totalCount: hit.totalCount,
+                todayCount: hit.todayCount,
+            };
+        });
+
+        const holdHit = countMap.get('0') || { totalCount: 0, todayCount: 0 };
+        rows.push({
+            tmId: 0,
+            name: '보류',
+            totalCount: holdHit.totalCount,
+            todayCount: holdHit.todayCount,
+        });
+
+        return res.json({ rows });
+    } catch (err) {
+        console.error(err);
+        return res.status(500).json({ error: 'Fetch assignment summary failed' });
+    }
+});
+
 app.get('/tm/agents', async (req, res) => {
     try {
         const [rows] = await pool.query('SELECT id, name, phone, last_login_at, isAdmin FROM tm ORDER BY name');
