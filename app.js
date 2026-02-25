@@ -78,9 +78,10 @@ app.use('/auth', authRouter);
 
 app.get('/chat/users', async (req, res) => {
     try {
-        const sessionUser = req.session?.user;
-        const fallbackTmId = Number(req.query?.tmId || 0);
-        const resolvedTmId = Number(sessionUser?.id || 0) || fallbackTmId;
+        const resolvedTmId = getSessionTmId(req);
+        if (!resolvedTmId) {
+            return res.status(401).json({ error: 'login required' });
+        }
         const [rows] = resolvedTmId
             ? await pool.query(
                 `
@@ -107,9 +108,10 @@ app.get('/chat/users', async (req, res) => {
 
 app.get('/chat/messages', async (req, res) => {
     try {
-        const sessionUser = req.session?.user;
-        const fallbackTmId = Number(req.query?.tmId || 0);
-        const resolvedTmId = Number(sessionUser?.id || 0) || fallbackTmId;
+        const resolvedTmId = getSessionTmId(req);
+        if (!resolvedTmId) {
+            return res.status(401).json({ error: 'login required' });
+        }
         await ensureChatSchema();
         const limitRaw = Number(req.query?.limit);
         const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 300) : 100;
@@ -209,9 +211,7 @@ app.get('/chat/messages', async (req, res) => {
 
 app.get('/chat/lead/:id', async (req, res) => {
     try {
-        const sessionUser = req.session?.user;
-        const fallbackTmId = Number(req.query?.tmId || 0);
-        const resolvedTmId = Number(sessionUser?.id || 0) || fallbackTmId;
+        const resolvedTmId = getSessionTmId(req);
         if (!resolvedTmId) {
             return res.status(401).json({ error: 'Unauthorized' });
         }
@@ -713,6 +713,30 @@ const formatPhone = (value) => {
     return String(value);
 };
 
+const getSessionTmId = (req) => {
+    const tmId = Number(req.session?.user?.id || 0);
+    return Number.isInteger(tmId) && tmId > 0 ? tmId : null;
+};
+
+const requireAdminApi = async (req, res) => {
+    const sessionTmId = getSessionTmId(req);
+    if (!sessionTmId) {
+        res.status(401).json({ error: 'login required' });
+        return false;
+    }
+    const ok = await ensureAdminRequest(req);
+    if (!ok) {
+        res.status(403).json({ error: 'admin only' });
+        return false;
+    }
+    return true;
+};
+
+app.use('/admin', async (req, res, next) => {
+    if (!(await requireAdminApi(req, res))) return;
+    next();
+});
+
 const normalizePhoneDigits = (value) => {
     if (!value) return '';
     let digits = String(value).replace(/\D/g, '');
@@ -834,9 +858,7 @@ const normalizeNullableInt = (value) => {
     return Math.max(0, Math.floor(n));
 };
 
-const resolveTmId = (req) => {
-    return req.session?.user?.id || req.body?.tmId || req.query?.tmId || null;
-};
+const resolveTmId = (req) => getSessionTmId(req);
 
 const getDailySummaryRows = async (conn, tmId, reportDate) => {
     const nextDay = nextDateKey(reportDate);
@@ -1155,6 +1177,7 @@ app.get('/tm/leads', async (req, res) => {
 });
 
 app.get('/tm/assign/summary', async (req, res) => {
+    if (!(await requireAdminApi(req, res))) return;
     try {
         await ensureLeadAssignedDateColumn();
         const columns = await describeTable('tm_leads');
@@ -1225,6 +1248,7 @@ app.get('/tm/assign/summary', async (req, res) => {
 });
 
 app.get('/tm/agents', async (req, res) => {
+    if (!(await requireAdminApi(req, res))) return;
     try {
         const [rows] = await pool.query('SELECT id, name, phone, last_login_at, isAdmin FROM tm ORDER BY name');
         res.json(rows);
@@ -1235,6 +1259,7 @@ app.get('/tm/agents', async (req, res) => {
 });
 
 app.post('/tm/agents', async (req, res) => {
+    if (!(await requireAdminApi(req, res))) return;
     const { name, phone, password } = req.body || {};
     if (!name || !phone || !password) {
         return res.status(400).json({ error: 'name, phone, password are required' });
@@ -1252,6 +1277,7 @@ app.post('/tm/agents', async (req, res) => {
 });
 
 app.patch('/tm/agents/:id', async (req, res) => {
+    if (!(await requireAdminApi(req, res))) return;
     const { id } = req.params;
     const { name, phone, password } = req.body || {};
     if (!name || !phone) {
@@ -1330,13 +1356,12 @@ app.post('/tm/schedules', async (req, res) => {
         customType,
         memo,
     } = req.body || {};
-    const sessionUser = req.session?.user || null;
-    const sessionTmId = sessionUser?.id ? Number(sessionUser.id) : null;
+    const sessionTmId = getSessionTmId(req);
     const isAdmin = await ensureAdminRequest(req);
     const requestedTmId = Number(tmId);
     const targetTmId = isAdmin
         ? (Number.isNaN(requestedTmId) ? null : requestedTmId)
-        : (sessionTmId || (Number.isNaN(requestedTmId) ? null : requestedTmId));
+        : sessionTmId;
 
     if (!targetTmId || !scheduleDate || !scheduleType) {
         return res.status(400).json({ error: 'tmId, scheduleDate, scheduleType are required' });
@@ -1507,13 +1532,12 @@ app.patch('/tm/schedules/:id', async (req, res) => {
         customType,
         memo,
     } = req.body || {};
-    const requestedTmId = Number(tmId ?? req.query?.tmId);
-    const sessionUser = req.session?.user || null;
-    const sessionTmId = sessionUser?.id ? Number(sessionUser.id) : null;
-    const ownerTmId = !Number.isNaN(sessionTmId) && sessionTmId > 0
-        ? sessionTmId
-        : (!Number.isNaN(requestedTmId) && requestedTmId > 0 ? requestedTmId : null);
+    const sessionTmId = getSessionTmId(req);
+    const ownerTmId = sessionTmId;
     const isAdmin = await ensureAdminRequest(req);
+    if (!ownerTmId && !isAdmin) {
+        return res.status(401).json({ error: 'login required' });
+    }
 
     try {
         await ensureTmScheduleSchema();
@@ -1602,13 +1626,11 @@ app.patch('/tm/schedules/:id', async (req, res) => {
 
 app.delete('/tm/schedules/:id', async (req, res) => {
     const { id } = req.params;
-    const requestedTmId = Number(req.body?.tmId ?? req.query?.tmId);
-    const sessionUser = req.session?.user || null;
-    const sessionTmId = sessionUser?.id ? Number(sessionUser.id) : null;
-    const ownerTmId = !Number.isNaN(sessionTmId) && sessionTmId > 0
-        ? sessionTmId
-        : (!Number.isNaN(requestedTmId) && requestedTmId > 0 ? requestedTmId : null);
+    const ownerTmId = getSessionTmId(req);
     const isAdmin = await ensureAdminRequest(req);
+    if (!ownerTmId && !isAdmin) {
+        return res.status(401).json({ error: 'login required' });
+    }
     try {
         await ensureTmScheduleSchema();
         const [rows] = await pool.query(
@@ -1631,6 +1653,7 @@ app.delete('/tm/schedules/:id', async (req, res) => {
 });
 
 app.post('/tm/assign', async (req, res) => {
+    if (!(await requireAdminApi(req, res))) return;
     const { leadId, tmId } = req.body || {};
     if (!leadId || tmId === undefined || tmId === null || tmId === '') {
         return res.status(400).json({ error: 'leadId and tmId are required' });
@@ -1760,11 +1783,13 @@ app.get('/tm/memos', async (req, res) => {
 app.patch('/tm/memos/:id', async (req, res) => {
     const { id } = req.params;
     const { memoContent, tmId } = req.body || {};
-    const sessionTmId = req.session?.user?.id;
-    const editorTmId = tmId || sessionTmId;
+    const sessionTmId = getSessionTmId(req);
 
-    if (!editorTmId) {
-        return res.status(400).json({ error: 'tmId is required' });
+    if (!sessionTmId) {
+        return res.status(401).json({ error: 'login required' });
+    }
+    if (tmId !== undefined && String(tmId) !== String(sessionTmId)) {
+        return res.status(403).json({ error: 'tmId mismatch' });
     }
     if (!memoContent || !String(memoContent).trim()) {
         return res.status(400).json({ error: 'memoContent is required' });
@@ -1779,7 +1804,7 @@ app.patch('/tm/memos/:id', async (req, res) => {
         if (!memo) {
             return res.status(404).json({ error: 'Memo not found' });
         }
-        if (String(memo.tm_id || '') !== String(editorTmId)) {
+        if (String(memo.tm_id || '') !== String(sessionTmId)) {
             return res.status(403).json({ error: 'Only author can edit this memo' });
         }
 
@@ -1798,8 +1823,12 @@ app.patch('/tm/memos/:id', async (req, res) => {
 app.post('/tm/leads/:id/update', async (req, res) => {
     const { id } = req.params;
     const { status, region, memo, tmId, reservationAt, name, recallAt } = req.body || {};
-    if (!tmId) {
-        return res.status(400).json({ error: 'tmId is required' });
+    const sessionTmId = getSessionTmId(req);
+    if (!sessionTmId) {
+        return res.status(401).json({ error: 'login required' });
+    }
+    if (tmId !== undefined && String(tmId) !== String(sessionTmId)) {
+        return res.status(403).json({ error: 'tmId mismatch' });
     }
     if (status === undefined && region === undefined && !memo && reservationAt === undefined && name === undefined && recallAt === undefined) {
         return res.status(400).json({ error: 'no changes provided' });
@@ -1917,7 +1946,7 @@ app.post('/tm/leads/:id/update', async (req, res) => {
                     ${KST_NOW_SQL},
                     ?, ?, ?, ?, ?, ?
                 )`,
-                [finalMemoText, memoStatusTag, memoStatusReservationAt, req.body.phone || currentPhone || '', tmId, id]
+                [finalMemoText, memoStatusTag, memoStatusReservationAt, req.body.phone || currentPhone || '', sessionTmId, id]
             );
         }
 
@@ -1929,10 +1958,10 @@ app.post('/tm/leads/:id/update', async (req, res) => {
 });
 
 app.get('/tm/recalls', async (req, res) => {
-    const tmId = req.session?.user?.id || req.query?.tmId;
+    const tmId = getSessionTmId(req);
     const mode = String(req.query?.mode || 'all').toLowerCase();
     if (!tmId) {
-        return res.status(401).json({ error: 'login required or tmId required' });
+        return res.status(401).json({ error: 'login required' });
     }
     if (!['all', 'due', 'upcoming'].includes(mode)) {
         return res.status(400).json({ error: 'mode must be all, due, or upcoming' });
@@ -1961,12 +1990,15 @@ app.get('/tm/recalls', async (req, res) => {
 
 app.post('/tm/reports/close', async (req, res) => {
     const { tmId, reportDate } = req.body || {};
-    const sessionTmId = req.session?.user?.id;
-    const targetTmId = tmId || sessionTmId;
+    const sessionTmId = getSessionTmId(req);
+    if (tmId !== undefined && String(tmId) !== String(sessionTmId || '')) {
+        return res.status(403).json({ error: 'tmId mismatch' });
+    }
+    const targetTmId = sessionTmId;
     const targetDate = normalizeReportDate(reportDate);
 
     if (!targetTmId) {
-        return res.status(400).json({ error: 'tmId is required' });
+        return res.status(401).json({ error: 'login required' });
     }
     if (!targetDate) {
         return res.status(400).json({ error: 'reportDate must be YYYY-MM-DD' });
@@ -2161,7 +2193,7 @@ app.post('/tm/reports/close', async (req, res) => {
 
 app.get('/tm/reports/mine', async (req, res) => {
     const tmId = resolveTmId(req);
-    if (!tmId) return res.status(401).json({ error: 'login required or tmId required' });
+    if (!tmId) return res.status(401).json({ error: 'login required' });
 
     try {
         await ensureReportSchema();
@@ -2205,7 +2237,7 @@ app.get('/tm/reports/mine', async (req, res) => {
 app.get('/tm/reports/me', async (req, res) => {
     const tmId = resolveTmId(req);
     const reportDate = normalizeReportDate(req.query?.date);
-    if (!tmId) return res.status(401).json({ error: 'login required or tmId required' });
+    if (!tmId) return res.status(401).json({ error: 'login required' });
     if (!reportDate) return res.status(400).json({ error: 'date must be YYYY-MM-DD' });
 
     try {
@@ -2262,7 +2294,7 @@ app.post('/tm/reports/draft', async (req, res) => {
     } = req.body || {};
 
     const targetDate = normalizeReportDate(reportDate);
-    if (!tmId) return res.status(401).json({ error: 'login required or tmId required' });
+    if (!tmId) return res.status(401).json({ error: 'login required' });
     if (!targetDate) return res.status(400).json({ error: 'reportDate must be YYYY-MM-DD' });
 
     const conn = await pool.getConnection();
@@ -2345,7 +2377,7 @@ app.post('/tm/reports/draft', async (req, res) => {
 app.get('/tm/reports/draft', async (req, res) => {
     const tmId = resolveTmId(req);
     const targetDate = normalizeReportDate(req.query?.reportDate || req.query?.date);
-    if (!tmId) return res.status(401).json({ error: 'login required or tmId required' });
+    if (!tmId) return res.status(401).json({ error: 'login required' });
     if (!targetDate) return res.status(400).json({ error: 'reportDate must be YYYY-MM-DD' });
 
     const conn = await pool.getConnection();
@@ -2412,7 +2444,7 @@ app.post('/tm/reports/submit', async (req, res) => {
     } = req.body || {};
 
     const targetDate = normalizeReportDate(reportDate);
-    if (!tmId) return res.status(401).json({ error: 'login required or tmId required' });
+    if (!tmId) return res.status(401).json({ error: 'login required' });
     if (!targetDate) return res.status(400).json({ error: 'reportDate must be YYYY-MM-DD' });
 
     const checklist = {
@@ -2489,7 +2521,7 @@ app.post('/tm/reports/submit', async (req, res) => {
 app.get('/tm/reports/:reportId/full', async (req, res) => {
     const tmId = resolveTmId(req);
     const reportId = Number(req.params?.reportId);
-    if (!tmId) return res.status(401).json({ error: 'login required or tmId required' });
+    if (!tmId) return res.status(401).json({ error: 'login required' });
     if (Number.isNaN(reportId)) return res.status(400).json({ error: 'valid reportId is required' });
 
     try {
@@ -3122,6 +3154,7 @@ app.delete('/admin/event-rules/:id', async (req, res) => {
 });
 
 app.get('/tm/leads/export', async (req, res) => {
+    if (!(await requireAdminApi(req, res))) return;
     try {
         const columns = await describeTable('tm_leads');
         const map = {
@@ -3325,11 +3358,13 @@ app.get('/dbdata/export', async (req, res) => {
 app.delete('/tm/memos/:id', async (req, res) => {
     const { id } = req.params;
     const { tmId } = req.body || {};
-    const sessionTmId = req.session?.user?.id;
-    const actorTmId = tmId || sessionTmId || req.query?.tmId;
+    const actorTmId = getSessionTmId(req);
 
     if (!actorTmId) {
-        return res.status(400).json({ error: 'tmId is required' });
+        return res.status(401).json({ error: 'login required' });
+    }
+    if (tmId !== undefined && String(tmId) !== String(actorTmId)) {
+        return res.status(403).json({ error: 'tmId mismatch' });
     }
 
     try {
