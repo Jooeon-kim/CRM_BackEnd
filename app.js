@@ -777,6 +777,48 @@ app.use('/admin', async (req, res, next) => {
     next();
 });
 
+const safeJson = (value) => {
+    if (value === undefined) return null;
+    try {
+        return JSON.stringify(value ?? null);
+    } catch (_) {
+        return JSON.stringify({ error: 'serialize_failed' });
+    }
+};
+
+const writeAdminAuditLog = async (req, action, targetType, targetId, beforeValue, afterValue) => {
+    try {
+        const adminTmId = getSessionTmId(req);
+        if (!adminTmId) return;
+        await pool.query(
+            `
+            INSERT INTO admin_audit_logs (
+                admin_tm_id,
+                action,
+                target_type,
+                target_id,
+                before_json,
+                after_json,
+                ip,
+                user_agent
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            `,
+            [
+                adminTmId,
+                String(action || ''),
+                String(targetType || ''),
+                targetId === undefined || targetId === null ? null : String(targetId),
+                safeJson(beforeValue),
+                safeJson(afterValue),
+                String(req.headers['x-forwarded-for'] || req.ip || '').slice(0, 64),
+                String(req.headers['user-agent'] || '').slice(0, 255),
+            ]
+        );
+    } catch (err) {
+        console.error('[audit] write failed:', err?.message || err);
+    }
+};
+
 const normalizePhoneDigits = (value) => {
     if (!value) return '';
     let digits = String(value).replace(/\D/g, '');
@@ -1308,6 +1350,14 @@ app.post('/tm/agents', async (req, res) => {
             'INSERT INTO tm (name, phone, password, isAdmin) VALUES (?, ?, ?, 0)',
             [name, phone, password]
         );
+        await writeAdminAuditLog(
+            req,
+            'TM_AGENT_CREATE',
+            'tm',
+            result.insertId,
+            null,
+            { id: result.insertId, name, phone, isAdmin: 0 }
+        );
         res.json({ ok: true, id: result.insertId });
     } catch (err) {
         console.error(err);
@@ -1323,6 +1373,11 @@ app.patch('/tm/agents/:id', async (req, res) => {
         return res.status(400).json({ error: 'name and phone are required' });
     }
     try {
+        const [beforeRows] = await pool.query(
+            'SELECT id, name, phone, isAdmin FROM tm WHERE id = ? LIMIT 1',
+            [id]
+        );
+        const before = beforeRows[0] || null;
         let result;
         if (password) {
             [result] = await pool.query(
@@ -1338,6 +1393,11 @@ app.patch('/tm/agents/:id', async (req, res) => {
         if (result.affectedRows === 0) {
             return res.status(404).json({ error: 'TM not found' });
         }
+        const [afterRows] = await pool.query(
+            'SELECT id, name, phone, isAdmin FROM tm WHERE id = ? LIMIT 1',
+            [id]
+        );
+        await writeAdminAuditLog(req, 'TM_AGENT_UPDATE', 'tm', id, before, afterRows[0] || null);
         res.json({ ok: true });
     } catch (err) {
         console.error(err);
@@ -1581,7 +1641,7 @@ app.patch('/tm/schedules/:id', async (req, res) => {
     try {
         await ensureTmScheduleSchema();
         const [rows] = await pool.query(
-            'SELECT id, tm_id FROM tm_schedule WHERE id = ? LIMIT 1',
+            'SELECT * FROM tm_schedule WHERE id = ? LIMIT 1',
             [id]
         );
         const current = rows[0];
@@ -1656,6 +1716,17 @@ app.patch('/tm/schedules/:id', async (req, res) => {
             `UPDATE tm_schedule SET ${setParts.join(', ')} WHERE id = ?`,
             params
         );
+        if (isAdmin) {
+            const [afterRows] = await pool.query('SELECT * FROM tm_schedule WHERE id = ? LIMIT 1', [id]);
+            await writeAdminAuditLog(
+                req,
+                'TM_SCHEDULE_UPDATE',
+                'tm_schedule',
+                id,
+                current,
+                afterRows?.[0] || null
+            );
+        }
         return res.json({ ok: true });
     } catch (err) {
         console.error(err);
@@ -1673,7 +1744,7 @@ app.delete('/tm/schedules/:id', async (req, res) => {
     try {
         await ensureTmScheduleSchema();
         const [rows] = await pool.query(
-            'SELECT id, tm_id FROM tm_schedule WHERE id = ? LIMIT 1',
+            'SELECT * FROM tm_schedule WHERE id = ? LIMIT 1',
             [id]
         );
         const current = rows[0];
@@ -1684,6 +1755,9 @@ app.delete('/tm/schedules/:id', async (req, res) => {
             return res.status(403).json({ error: 'Only owner can delete this schedule' });
         }
         await pool.query('DELETE FROM tm_schedule WHERE id = ?', [id]);
+        if (isAdmin) {
+            await writeAdminAuditLog(req, 'TM_SCHEDULE_DELETE', 'tm_schedule', id, current, null);
+        }
         return res.json({ ok: true });
     } catch (err) {
         console.error(err);
@@ -2983,11 +3057,12 @@ app.post('/admin/leads/:id/update', async (req, res) => {
 
     try {
         await ensureLeadAssignedDateColumn();
-        const [leadRows] = await pool.query('SELECT 상태, tm, 예약_내원일시, 연락처 FROM tm_leads WHERE id = ?', [id]);
+        const [leadRows] = await pool.query('SELECT * FROM tm_leads WHERE id = ?', [id]);
         const lead = leadRows?.[0];
         if (!lead) {
             return res.status(404).json({ error: 'Lead not found' });
         }
+        const beforeLead = lead;
         const currentStatus = lead.상태 ?? null;
         const currentTm = lead.tm ?? null;
         const currentReservationAt = lead.예약_내원일시 ?? null;
@@ -3071,6 +3146,10 @@ app.post('/admin/leads/:id/update', async (req, res) => {
             return res.status(404).json({ error: 'Lead not found' });
         }
 
+        const [afterLeadRows] = await pool.query('SELECT * FROM tm_leads WHERE id = ?', [id]);
+        const afterLead = afterLeadRows?.[0] || null;
+        await writeAdminAuditLog(req, 'LEAD_UPDATE', 'tm_leads', id, beforeLead, afterLead);
+
         const nextStatus = statusProvided ? status : currentStatus;
         const shouldAutoStatusMemo = statusChanged && ['예약부도', '내원완료'].includes(String(nextStatus || '').trim());
         const finalMemoText = String(memo || '').trim() || (shouldAutoStatusMemo ? String(nextStatus || '').trim() : '');
@@ -3135,11 +3214,31 @@ app.post('/admin/leads/reassign-bulk', async (req, res) => {
         }
 
         const placeholders = normalizedLeadIds.map(() => '?').join(', ');
+        const [beforeRows] = await pool.query(
+            `SELECT \`${idCol}\` AS id, \`${assignCol}\` AS tm, \`${assignedAtCol}\` AS assigned_at
+             FROM tm_leads
+             WHERE \`${idCol}\` IN (${placeholders})`,
+            normalizedLeadIds
+        );
         const [result] = await pool.query(
             `UPDATE tm_leads
              SET \`${assignCol}\` = ?, \`${assignedAtCol}\` = ${KST_NOW_SQL}
              WHERE \`${idCol}\` IN (${placeholders})`,
             [tmId, ...normalizedLeadIds]
+        );
+        const [afterRows] = await pool.query(
+            `SELECT \`${idCol}\` AS id, \`${assignCol}\` AS tm, \`${assignedAtCol}\` AS assigned_at
+             FROM tm_leads
+             WHERE \`${idCol}\` IN (${placeholders})`,
+            normalizedLeadIds
+        );
+        await writeAdminAuditLog(
+            req,
+            'LEAD_REASSIGN_BULK',
+            'tm_leads',
+            normalizedLeadIds.join(','),
+            { tmId, rows: beforeRows },
+            { tmId, rows: afterRows, updated: result.affectedRows || 0 }
         );
 
         return res.json({ ok: true, updated: result.affectedRows || 0 });
@@ -3171,6 +3270,14 @@ app.post('/admin/event-rules', async (req, res) => {
             'INSERT INTO event_rules (name, keywords) VALUES (?, ?)',
             [name, keywords]
         );
+        await writeAdminAuditLog(
+            req,
+            'EVENT_RULE_CREATE',
+            'event_rules',
+            result.insertId,
+            null,
+            { id: result.insertId, name, keywords }
+        );
         res.json({ ok: true, id: result.insertId });
     } catch (err) {
         console.error(err);
@@ -3181,14 +3288,71 @@ app.post('/admin/event-rules', async (req, res) => {
 app.delete('/admin/event-rules/:id', async (req, res) => {
     const { id } = req.params;
     try {
+        const [beforeRows] = await pool.query('SELECT * FROM event_rules WHERE id = ? LIMIT 1', [id]);
+        const before = beforeRows?.[0] || null;
         const [result] = await pool.query('DELETE FROM event_rules WHERE id = ?', [id]);
         if (result.affectedRows === 0) {
             return res.status(404).json({ error: 'Rule not found' });
         }
+        await writeAdminAuditLog(req, 'EVENT_RULE_DELETE', 'event_rules', id, before, null);
         res.json({ ok: true });
     } catch (err) {
         console.error(err);
         res.status(500).json({ error: 'Delete failed' });
+    }
+});
+
+app.get('/admin/audit-logs', async (req, res) => {
+    if (!(await requireAdminApi(req, res))) return;
+    try {
+        const {
+            action = '',
+            targetType = '',
+            adminTmId = '',
+            limit = '100',
+        } = req.query || {};
+        const limitNum = Math.max(1, Math.min(500, Number(limit) || 100));
+        const where = [];
+        const params = [];
+        if (String(action).trim()) {
+            where.push('l.action = ?');
+            params.push(String(action).trim());
+        }
+        if (String(targetType).trim()) {
+            where.push('l.target_type = ?');
+            params.push(String(targetType).trim());
+        }
+        if (String(adminTmId).trim()) {
+            where.push('l.admin_tm_id = ?');
+            params.push(String(adminTmId).trim());
+        }
+        const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+        const [rows] = await pool.query(
+            `
+            SELECT
+                l.id,
+                l.admin_tm_id,
+                t.name AS admin_name,
+                l.action,
+                l.target_type,
+                l.target_id,
+                l.before_json,
+                l.after_json,
+                l.ip_address,
+                l.user_agent,
+                l.created_at
+            FROM admin_audit_logs l
+            LEFT JOIN tm t ON t.id = l.admin_tm_id
+            ${whereSql}
+            ORDER BY l.id DESC
+            LIMIT ?
+            `,
+            [...params, limitNum]
+        );
+        return res.json(rows);
+    } catch (err) {
+        console.error(err);
+        return res.status(500).json({ error: 'DB query failed' });
     }
 });
 
