@@ -25,6 +25,13 @@ const parseCookies = (cookieHeader) => {
     }, {});
 };
 
+const regenerateSession = (req) => new Promise((resolve, reject) => {
+    req.session.regenerate((err) => {
+        if (err) return reject(err);
+        return resolve();
+    });
+});
+
 const requireAdmin = (req, res, next) => {
     if (!req.session || !req.session.user || !req.session.isAdmin) {
         return res.status(401).send('로그인이 필요합니다.');
@@ -89,6 +96,7 @@ router.post('/login', async (req, res) => {
             return res.status(401).send('Login failed.');
         }
 
+        await regenerateSession(req);
         req.session.user = { id: user.id, username: user.name };
         // mysql tinyint(1) may be returned as number/boolean/string by env/driver settings.
         req.session.isAdmin = Number(user.isAdmin) === 1;
