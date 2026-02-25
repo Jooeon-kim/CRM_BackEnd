@@ -70,13 +70,14 @@ const sessionMiddleware = session({
     secret: process.env.SESSION_SECRET || 'F8v!q2Kz9@Lm4#Nx7$Rp1^Tg6&Hy3*Ud5+Wm8?Sa',
     resave: false,
     saveUninitialized: false,
+    rolling: true,
     proxy: true,
     store: sessionStore || undefined,
     cookie: {
         httpOnly: true,
         sameSite: cookieSameSite,
         secure: cookieSecure,
-        maxAge: 1000 * 60 * 60 * 10
+        maxAge: 1000 * 60 * 60 * 4
     }
 });
 app.use(sessionMiddleware);
