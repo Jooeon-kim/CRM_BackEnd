@@ -998,6 +998,10 @@ const replaceReportLeads = async (conn, reportId, summary) => {
             `,
             [detailValues]
         );
+        await conn.query(
+            `UPDATE tm_daily_report_leads SET created_at = ${KST_NOW_SQL} WHERE report_id = ?`,
+            [reportId]
+        );
     }
 };
 
@@ -1421,8 +1425,8 @@ app.post('/company/schedules', async (req, res) => {
         await ensureCompanyScheduleSchema();
         const [result] = await pool.query(
             `
-            INSERT INTO company_schedule (start_date, end_date, content)
-            VALUES (?, ?, ?)
+            INSERT INTO company_schedule (start_date, end_date, content, created_at, updated_at)
+            VALUES (?, ?, ?, ${KST_NOW_SQL}, ${KST_NOW_SQL})
             `,
             [start, end, String(content).trim()]
         );
@@ -1464,7 +1468,7 @@ app.patch('/company/schedules/:id', async (req, res) => {
         await pool.query(
             `
             UPDATE company_schedule
-            SET start_date = ?, end_date = ?, content = ?
+            SET start_date = ?, end_date = ?, content = ?, updated_at = ${KST_NOW_SQL}
             WHERE id = ?
             `,
             [nextStart, nextEnd, nextContent, id]
@@ -2118,6 +2122,10 @@ app.post('/tm/reports/close', async (req, res) => {
                 ) VALUES ?
                 `,
                 [detailValues]
+            );
+            await conn.query(
+                `UPDATE tm_daily_report_leads SET created_at = ${KST_NOW_SQL} WHERE report_id = ?`,
+                [reportId]
             );
         }
 
