@@ -47,10 +47,21 @@ const sessionMiddleware = session({
         httpOnly: true,
         sameSite: cookieSameSite,
         secure: cookieSecure,
-        maxAge: 1000 * 60 * 60
+        maxAge: 1000 * 60 * 60 * 10
     }
 });
 app.use(sessionMiddleware);
+
+const requireAuthApi = (req, res, next) => {
+    const tmId = Number(req.session?.user?.id || 0);
+    if (!Number.isInteger(tmId) || tmId <= 0) {
+        return res.status(401).json({ error: 'login required' });
+    }
+    return next();
+};
+
+app.use('/tm', requireAuthApi);
+app.use('/chat', requireAuthApi);
 
 const authRouter = require('./routes/auth');
 const ExcelJS = require('exceljs');

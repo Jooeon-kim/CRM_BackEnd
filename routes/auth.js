@@ -107,7 +107,7 @@ router.post('/login', async (req, res) => {
                 sameSite: cookieSameSite,
                 secure: cookieSecure,
                 path: '/',
-                maxAge: 1000 * 60 * 60
+                maxAge: 1000 * 60 * 60 * 10
             });
         }
 
