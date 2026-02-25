@@ -101,11 +101,10 @@ router.post('/login', async (req, res) => {
         // mysql tinyint(1) may be returned as number/boolean/string by env/driver settings.
         req.session.isAdmin = Number(user.isAdmin) === 1;
 
-        try {
-            await pool.query('UPDATE tm SET last_login_at = NOW() WHERE id = ?', [user.id]);
-        } catch (updateErr) {
+        // Do not block login response for non-critical writes.
+        pool.query('UPDATE tm SET last_login_at = NOW() WHERE id = ?', [user.id]).catch((updateErr) => {
             console.error(updateErr);
-        }
+        });
 
         if (req.session.isAdmin) {
             const token = crypto.randomBytes(16).toString('hex');
@@ -120,12 +119,13 @@ router.post('/login', async (req, res) => {
         }
 
         if (!stored.startsWith('$2')) {
-            try {
-                const hashed = await bcrypt.hash(password, 10);
-                await pool.query('UPDATE tm SET password = ? WHERE id = ?', [hashed, user.id]);
-            } catch (updateErr) {
-                console.error(updateErr);
-            }
+            // Password hash migration should not delay login response.
+            bcrypt
+                .hash(password, 10)
+                .then((hashed) => pool.query('UPDATE tm SET password = ? WHERE id = ?', [hashed, user.id]))
+                .catch((updateErr) => {
+                    console.error(updateErr);
+                });
         }
 
         if (wantsJson(req)) {
@@ -148,21 +148,24 @@ router.post('/login', async (req, res) => {
 
 router.post('/logout', (req, res) => {
     const cookieName = ADMIN_COOKIE_NAME;
-    req.session.destroy(() => {
-        res.clearCookie('sid', {
-            httpOnly: true,
-            sameSite: cookieSameSite,
-            secure: cookieSecure,
-            path: '/'
-        });
-        res.clearCookie(cookieName, {
-            httpOnly: true,
-            sameSite: cookieSameSite,
-            secure: cookieSecure,
-            path: '/'
-        });
-        res.send('로그아웃 완료');
+    res.clearCookie('sid', {
+        httpOnly: true,
+        sameSite: cookieSameSite,
+        secure: cookieSecure,
+        path: '/'
     });
+    res.clearCookie(cookieName, {
+        httpOnly: true,
+        sameSite: cookieSameSite,
+        secure: cookieSecure,
+        path: '/'
+    });
+    res.send('로그아웃 완료');
+
+    // Destroy session in background so response is immediate.
+    if (req.session) {
+        req.session.destroy(() => {});
+    }
 });
 
 router.get('/secure', requireAdmin, (req, res) => {
