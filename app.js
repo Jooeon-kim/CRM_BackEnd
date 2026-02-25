@@ -2531,6 +2531,17 @@ app.post('/admin/sync-meta-leads', async (req, res) => {
             await pool.query('ALTER TABLE tm_leads ADD COLUMN meta_id varchar(50) NULL');
         }
 
+        const [resubColRows] = await pool.query(`
+            SELECT COUNT(*) AS cnt
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = 'tm_leads'
+              AND COLUMN_NAME = 'meta_resubmission_id'
+        `);
+        if (resubColRows[0]?.cnt === 0) {
+            await pool.query('ALTER TABLE tm_leads ADD COLUMN meta_resubmission_id BIGINT UNSIGNED NULL');
+        }
+
         const [ruleRows] = await pool.query(`
             SELECT id, name, keywords
             FROM event_rules
@@ -2549,20 +2560,53 @@ app.post('/admin/sync-meta-leads', async (req, res) => {
             };
         });
 
-        const [metaRows] = await pool.query(`
-            SELECT
-                id,
-                created_time,
-                full_name,
-                ad_name,
-                adset_name,
-                phone_number,
-                상담_희망_시간을_선택해주세요
-            FROM meta_leads m
-            WHERE NOT EXISTS (
-                SELECT 1 FROM tm_leads t WHERE t.meta_id = m.id
-            )
+        const [hasResubTableRows] = await pool.query(`
+            SELECT COUNT(*) AS cnt
+            FROM INFORMATION_SCHEMA.TABLES
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = 'meta_lead_resubmissions'
         `);
+        const hasResubTable = Number(hasResubTableRows?.[0]?.cnt || 0) > 0;
+
+        let metaRows = [];
+        if (hasResubTable) {
+            const [rows] = await pool.query(`
+                SELECT
+                    r.id AS resubmission_id,
+                    r.meta_id AS id,
+                    r.created_time,
+                    r.full_name,
+                    r.ad_name,
+                    r.adset_name,
+                    r.phone_number,
+                    r.consultation_time AS 상담_희망_시간을_선택해주세요
+                FROM meta_lead_resubmissions r
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM tm_leads t
+                    WHERE t.meta_resubmission_id = r.id
+                )
+                ORDER BY r.id ASC
+            `);
+            metaRows = rows || [];
+        } else {
+            const [rows] = await pool.query(`
+                SELECT
+                    NULL AS resubmission_id,
+                    id,
+                    created_time,
+                    full_name,
+                    ad_name,
+                    adset_name,
+                    phone_number,
+                    상담_희망_시간을_선택해주세요
+                FROM meta_leads m
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM tm_leads t WHERE t.meta_id = m.id
+                )
+            `);
+            metaRows = rows || [];
+        }
 
         if (!metaRows.length) {
             return res.json({ inserted: 0 });
@@ -2584,6 +2628,7 @@ app.post('/admin/sync-meta-leads', async (req, res) => {
             await conn.beginTransaction();
             const insertSql = `
                 INSERT INTO tm_leads (
+                    meta_resubmission_id,
                     meta_id,
                     인입날짜,
                     이름,
@@ -2607,6 +2652,7 @@ app.post('/admin/sync-meta-leads', async (req, res) => {
                 }
                 const eventName = pickEvent(row.adset_name, row.ad_name);
                 const [result] = await conn.query(insertSql, [
+                    row.resubmission_id ?? null,
                     row.id,
                     row.created_time || null,
                     row.full_name || null,
