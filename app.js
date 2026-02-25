@@ -623,8 +623,7 @@ app.get('/dbdata', async (req, res) => {
             params.push(`%${memo}%`);
         }
         if (assignedToday && map.assignedDate) {
-            // `배정날짜` is stored in UTC. Compare by KST calendar date.
-            where.push(`DATE(DATE_ADD(l.\`${map.assignedDate}\`, INTERVAL 9 HOUR)) = DATE(DATE_ADD(UTC_TIMESTAMP(), INTERVAL 9 HOUR))`);
+            where.push(`DATE(l.\`${map.assignedDate}\`) = DATE(${KST_NOW_SQL})`);
         }
 
         const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
@@ -693,34 +692,6 @@ const formatDateTime = (value) => {
     return `${yyyy}-${mm}-${dd} ${hh}:${min}`;
 };
 
-const formatUtcAsKstDateTime = (value) => {
-    if (!value) return '';
-    const raw = String(value).trim();
-    const plain = raw.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?$/);
-    let utcDate = null;
-    if (plain) {
-        utcDate = new Date(Date.UTC(
-            Number(plain[1]),
-            Number(plain[2]) - 1,
-            Number(plain[3]),
-            Number(plain[4]),
-            Number(plain[5]),
-            Number(plain[6] || '0')
-        ));
-    } else {
-        const parsed = new Date(raw);
-        if (!Number.isNaN(parsed.getTime())) utcDate = parsed;
-    }
-    if (!utcDate || Number.isNaN(utcDate.getTime())) return String(value);
-    const kst = new Date(utcDate.getTime() + 9 * 60 * 60 * 1000);
-    const yyyy = kst.getUTCFullYear();
-    const mm = String(kst.getUTCMonth() + 1).padStart(2, '0');
-    const dd = String(kst.getUTCDate()).padStart(2, '0');
-    const hh = String(kst.getUTCHours()).padStart(2, '0');
-    const min = String(kst.getUTCMinutes()).padStart(2, '0');
-    return `${yyyy}-${mm}-${dd} ${hh}:${min}`;
-};
-
 const formatPhone = (value) => {
     if (!value) return '';
     let digits = String(value).replace(/\D/g, '');
@@ -743,6 +714,29 @@ const normalizePhoneDigits = (value) => {
         digits = `0${digits.slice(2)}`;
     }
     return digits;
+};
+
+const KST_NOW_SQL = 'DATE_ADD(UTC_TIMESTAMP(), INTERVAL 9 HOUR)';
+
+const toKstDateTimeString = (value) => {
+    if (!value) return null;
+    const raw = String(value).trim();
+    const parsed = new Date(raw);
+    if (!Number.isNaN(parsed.getTime())) {
+        const kst = new Date(parsed.getTime() + 9 * 60 * 60 * 1000);
+        const yyyy = kst.getUTCFullYear();
+        const mm = String(kst.getUTCMonth() + 1).padStart(2, '0');
+        const dd = String(kst.getUTCDate()).padStart(2, '0');
+        const hh = String(kst.getUTCHours()).padStart(2, '0');
+        const min = String(kst.getUTCMinutes()).padStart(2, '0');
+        const ss = String(kst.getUTCSeconds()).padStart(2, '0');
+        return `${yyyy}-${mm}-${dd} ${hh}:${min}:${ss}`;
+    }
+    const plain = raw.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})(?::(\d{2}))?$/);
+    if (plain) {
+        return `${plain[1]} ${plain[2]}:${plain[3] || '00'}`;
+    }
+    return raw;
 };
 
 const REPORT_METRIC_TYPES = new Set(['MISSED', 'RESERVED', 'VISIT_TODAY', 'VISIT_NEXTDAY', 'FAILED', 'RECALL_WAIT']);
@@ -934,7 +928,7 @@ const upsertReportBase = async (conn, tmId, reportDate, summary) => {
             visit_nextday_count,
             created_at,
             updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ${KST_NOW_SQL}, ${KST_NOW_SQL})
         ON DUPLICATE KEY UPDATE
             total_call_count = VALUES(total_call_count),
             missed_count = VALUES(missed_count),
@@ -942,7 +936,7 @@ const upsertReportBase = async (conn, tmId, reportDate, summary) => {
             reserved_count = VALUES(reserved_count),
             visit_today_count = VALUES(visit_today_count),
             visit_nextday_count = VALUES(visit_nextday_count),
-            updated_at = NOW()
+            updated_at = ${KST_NOW_SQL}
         `,
         [String(tmId), reportDate, totalCallCount, missedCount, failedCount, reservedCount, visitTodayCount, visitNextdayCount]
     );
@@ -1129,7 +1123,7 @@ app.get('/tm/assign/summary', async (req, res) => {
 
         const todayExpr = assignedAtCol
             ? `SUM(CASE WHEN \`${assignedAtCol}\` IS NOT NULL
-                          AND DATE(DATE_ADD(\`${assignedAtCol}\`, INTERVAL 9 HOUR)) = DATE(DATE_ADD(UTC_TIMESTAMP(), INTERVAL 9 HOUR))
+                          AND DATE(\`${assignedAtCol}\`) = DATE(${KST_NOW_SQL})
                         THEN 1 ELSE 0 END) AS today_count`
             : '0 AS today_count';
 
@@ -1605,7 +1599,7 @@ app.post('/tm/assign', async (req, res) => {
         }
 
         const setSql = assignedAtCol
-            ? `\`${assignCol}\` = ?, \`${assignedAtCol}\` = NOW()`
+            ? `\`${assignCol}\` = ?, \`${assignedAtCol}\` = ${KST_NOW_SQL}`
             : `\`${assignCol}\` = ?`;
         const [result] = await pool.query(
             `UPDATE tm_leads
@@ -1797,7 +1791,7 @@ app.post('/tm/leads/:id/update', async (req, res) => {
             params.push(region || null);
         }
         if (shouldApplyCallMetrics) {
-            updates.push('콜_날짜시간 = NOW()');
+            updates.push(`콜_날짜시간 = ${KST_NOW_SQL}`);
             updates.push('콜횟수 = COALESCE(콜횟수, 0) + ?');
             params.push(incCall ? 1 : 0);
             updates.push('부재중_횟수 = COALESCE(부재중_횟수, 0) + ?');
@@ -1885,8 +1879,8 @@ app.get('/tm/recalls', async (req, res) => {
         await ensureRecallColumns();
         const where = ['tm = ?', "TRIM(COALESCE(`상태`, '')) = '리콜대기'", '`리콜_예정일시` IS NOT NULL'];
         const params = [String(tmId)];
-        if (mode === 'due') where.push('`리콜_예정일시` <= NOW()');
-        if (mode === 'upcoming') where.push('`리콜_예정일시` > NOW()');
+        if (mode === 'due') where.push(`\`리콜_예정일시\` <= ${KST_NOW_SQL}`);
+        if (mode === 'upcoming') where.push(`\`리콜_예정일시\` > ${KST_NOW_SQL}`);
         const [rows] = await pool.query(
             `
             SELECT *
@@ -2000,7 +1994,7 @@ app.post('/tm/reports/close', async (req, res) => {
                 submitted_at,
                 created_at,
                 updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), NOW())
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ${KST_NOW_SQL}, ${KST_NOW_SQL}, ${KST_NOW_SQL})
             ON DUPLICATE KEY UPDATE
                 total_call_count = VALUES(total_call_count),
                 missed_count = VALUES(missed_count),
@@ -2008,8 +2002,8 @@ app.post('/tm/reports/close', async (req, res) => {
                 reserved_count = VALUES(reserved_count),
                 visit_today_count = VALUES(visit_today_count),
                 visit_nextday_count = VALUES(visit_nextday_count),
-                submitted_at = NOW(),
-                updated_at = NOW()
+                submitted_at = ${KST_NOW_SQL},
+                updated_at = ${KST_NOW_SQL}
             `,
             [
                 normalizedTmId,
@@ -2225,7 +2219,7 @@ app.post('/tm/reports/draft', async (req, res) => {
                 check_db_crm = COALESCE(?, check_db_crm),
                 check_inhouse_crm = COALESCE(?, check_inhouse_crm),
                 check_sheet = COALESCE(?, check_sheet),
-                updated_at = NOW()
+                updated_at = ${KST_NOW_SQL}
             WHERE id = ?
             `,
             [
@@ -2384,8 +2378,8 @@ app.post('/tm/reports/submit', async (req, res) => {
                 check_inhouse_crm = ?,
                 check_sheet = ?,
                 is_submitted = 1,
-                submitted_at = NOW(),
-                updated_at = NOW()
+                submitted_at = ${KST_NOW_SQL},
+                updated_at = ${KST_NOW_SQL}
             WHERE id = ?
             `,
             [
@@ -2779,7 +2773,7 @@ app.post('/admin/sync-meta-leads', async (req, res) => {
                 const eventName = pickEvent(row.adset_name, row.ad_name);
                 const [result] = await conn.query(insertSql, [
                     row.id,
-                    row.created_time || null,
+                    toKstDateTimeString(row.created_time) || null,
                     row.full_name || null,
                     phone || null,
                     row.상담_희망_시간을_선택해주세요 || null,
@@ -2828,9 +2822,9 @@ app.post('/admin/leads', async (req, res) => {
                 \`tm\`,
                 \`배정날짜\`
             ) VALUES (
-                NOW(),
+                ${KST_NOW_SQL},
                 ?, ?, ?, ?,
-                ${hasTm ? 'NOW()' : 'NULL'}
+                ${hasTm ? KST_NOW_SQL : 'NULL'}
             )
             `,
             [normalizedName, normalizedPhone, normalizedEvent, normalizedTm]
@@ -2895,7 +2889,7 @@ app.post('/admin/leads/:id/update', async (req, res) => {
         const shouldApplyCallMetrics = statusChanged;
         const incCall = shouldApplyCallMetrics && callStatuses.includes(status);
         if (shouldApplyCallMetrics) {
-            updates.push('콜_날짜시간 = NOW()');
+            updates.push(`콜_날짜시간 = ${KST_NOW_SQL}`);
             updates.push('콜횟수 = COALESCE(콜횟수, 0) + ?');
             params.push(incCall ? 1 : 0);
             updates.push('부재중_횟수 = COALESCE(부재중_횟수, 0) + ?');
@@ -2923,7 +2917,7 @@ app.post('/admin/leads/:id/update', async (req, res) => {
             updates.push('tm = ?');
             params.push(tmId || null);
             if (tmId && String(tmId) !== String(currentTm || '')) {
-                updates.push('배정날짜 = NOW()');
+                updates.push(`배정날짜 = ${KST_NOW_SQL}`);
             }
         }
 
@@ -2993,7 +2987,7 @@ app.post('/admin/leads/reassign-bulk', async (req, res) => {
         const placeholders = normalizedLeadIds.map(() => '?').join(', ');
         const [result] = await pool.query(
             `UPDATE tm_leads
-             SET \`${assignCol}\` = ?, \`${assignedAtCol}\` = NOW()
+             SET \`${assignCol}\` = ?, \`${assignedAtCol}\` = ${KST_NOW_SQL}
              WHERE \`${idCol}\` IN (${placeholders})`,
             [tmId, ...normalizedLeadIds]
         );
@@ -3162,7 +3156,7 @@ app.get('/dbdata/export', async (req, res) => {
             params.push(`%${memo}%`);
         }
         if (assignedTodayOnly === '1' || assignedTodayOnly === 'true') {
-            where.push('DATE(DATE_ADD(l.`배정날짜`, INTERVAL 9 HOUR)) = DATE(DATE_ADD(UTC_TIMESTAMP(), INTERVAL 9 HOUR))');
+            where.push(`DATE(l.\`배정날짜\`) = DATE(${KST_NOW_SQL})`);
         }
 
         const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
@@ -3231,7 +3225,7 @@ app.get('/dbdata/export', async (req, res) => {
                     return;
                 }
                 if (key === '인입날짜' || key === '배정날짜' || key === '콜_날짜시간' || key === '최근메모시간') {
-                    formatted[key] = row[key] ? formatUtcAsKstDateTime(row[key]) : '';
+                    formatted[key] = row[key] ? formatDateTime(row[key]) : '';
                     return;
                 }
                 formatted[key] = row[key] ?? '';
