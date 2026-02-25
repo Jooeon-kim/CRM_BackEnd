@@ -822,31 +822,38 @@ const safeJson = (value) => {
 const writeAdminAuditLog = async (req, action, targetType, targetId, beforeValue, afterValue) => {
     try {
         await ensureAdminAuditLogSchema();
+        const auditCols = await describeTable('admin_audit_logs');
         const adminTmId = getSessionTmId(req);
         if (!adminTmId) return;
+        const ipCol = auditCols.includes('ip') ? 'ip' : (auditCols.includes('ip_address') ? 'ip_address' : null);
+        const userAgentCol = auditCols.includes('user_agent') ? 'user_agent' : null;
+        const colNames = ['admin_tm_id', 'action', 'target_type', 'target_id', 'before_json', 'after_json'];
+        const values = ['?', '?', '?', '?', '?', '?'];
+        const params = [
+            adminTmId,
+            String(action || ''),
+            String(targetType || ''),
+            targetId === undefined || targetId === null ? null : String(targetId),
+            safeJson(beforeValue),
+            safeJson(afterValue),
+        ];
+        if (ipCol) {
+            colNames.push(ipCol);
+            values.push('?');
+            params.push(String(req.headers['x-forwarded-for'] || req.ip || '').slice(0, 64));
+        }
+        if (userAgentCol) {
+            colNames.push(userAgentCol);
+            values.push('?');
+            params.push(String(req.headers['user-agent'] || '').slice(0, 255));
+        }
         await pool.query(
             `
             INSERT INTO admin_audit_logs (
-                admin_tm_id,
-                action,
-                target_type,
-                target_id,
-                before_json,
-                after_json,
-                ip,
-                user_agent
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ${colNames.join(', ')}
+            ) VALUES (${values.join(', ')})
             `,
-            [
-                adminTmId,
-                String(action || ''),
-                String(targetType || ''),
-                targetId === undefined || targetId === null ? null : String(targetId),
-                safeJson(beforeValue),
-                safeJson(afterValue),
-                String(req.headers['x-forwarded-for'] || req.ip || '').slice(0, 64),
-                String(req.headers['user-agent'] || '').slice(0, 255),
-            ]
+            params
         );
     } catch (err) {
         console.error('[audit] write failed:', err?.message || err);
@@ -3362,6 +3369,10 @@ app.get('/admin/audit-logs', async (req, res) => {
             params.push(String(adminTmId).trim());
         }
         const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+        const auditCols = await describeTable('admin_audit_logs');
+        const ipSelectExpr = auditCols.includes('ip_address')
+            ? 'l.ip_address'
+            : (auditCols.includes('ip') ? 'l.ip' : 'NULL');
         const [rows] = await pool.query(
             `
             SELECT
@@ -3373,7 +3384,7 @@ app.get('/admin/audit-logs', async (req, res) => {
                 l.target_id,
                 l.before_json,
                 l.after_json,
-                l.ip_address,
+                ${ipSelectExpr} AS ip_address,
                 l.user_agent,
                 l.created_at
             FROM admin_audit_logs l
