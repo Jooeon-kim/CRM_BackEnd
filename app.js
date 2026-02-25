@@ -3436,8 +3436,8 @@ io.on('connection', (socket) => {
             const [result] = await pool.query(
                 `
                 INSERT INTO tm_chat_messages (
-                    sender_tm_id, target_tm_id, is_group, sender_name, sender_role, message, message_type, shared_lead_id, shared_payload
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    sender_tm_id, target_tm_id, is_group, sender_name, sender_role, message, message_type, shared_lead_id, shared_payload, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ${KST_NOW_SQL})
                 `,
                 [
                     currentActor.senderTmId,
