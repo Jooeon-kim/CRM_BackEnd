@@ -102,7 +102,7 @@ router.post('/login', async (req, res) => {
         req.session.isAdmin = Number(user.isAdmin) === 1;
 
         // Do not block login response for non-critical writes.
-        pool.query('UPDATE tm SET last_login_at = NOW() WHERE id = ?', [user.id]).catch((updateErr) => {
+        pool.query('UPDATE tm SET last_login_at = DATE_ADD(UTC_TIMESTAMP(), INTERVAL 9 HOUR) WHERE id = ?', [user.id]).catch((updateErr) => {
             console.error(updateErr);
         });
 
