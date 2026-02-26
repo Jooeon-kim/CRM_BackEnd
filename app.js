@@ -1009,40 +1009,53 @@ const getDailySummaryRows = async (conn, tmId, reportDate) => {
         [String(tmId), reportDate]
     );
 
-    const [nextdayReservedRows] = await conn.query(
+    const [dailyStatusRows] = await conn.query(
         `
         SELECT
-            l.id,
-            l.\`이름\` AS name,
-            l.\`연락처\` AS phone,
-            l.\`상태\` AS status,
-            COALESCE(l.\`콜횟수\`, 0) AS call_count,
-            l.\`예약_내원일시\` AS reservation_at,
+            m.tm_lead_id AS id,
+            COALESCE(l.\`이름\`, '') AS name,
+            COALESCE(l.\`연락처\`, m.target_phone, '') AS phone,
+            TRIM(COALESCE(m.status_tag, '')) AS status,
+            m.status_reservation_at AS reservation_at,
             m.memo_content AS latest_memo
-        FROM tm_leads l
-        ${latestMemoJoinSql}
-        WHERE l.tm = ?
-          AND TRIM(COALESCE(l.\`상태\`, '')) = '예약'
-          AND DATE(l.\`예약_내원일시\`) = ?
-        ORDER BY l.id DESC
+        FROM tm_memos m
+        INNER JOIN (
+            SELECT tm_lead_id, MAX(id) AS max_id
+            FROM tm_memos
+            WHERE tm_id = ?
+              AND DATE(memo_time) = ?
+              AND tm_lead_id IS NOT NULL
+              AND TRIM(COALESCE(status_tag, '')) <> ''
+            GROUP BY tm_lead_id
+        ) latest
+          ON latest.max_id = m.id
+        LEFT JOIN tm_leads l
+          ON l.id = m.tm_lead_id
+        WHERE m.tm_id = ?
+        ORDER BY m.tm_lead_id DESC
         `,
-        [String(tmId), nextDay]
+        [String(tmId), reportDate, String(tmId)]
     );
 
     const statusText = (row) => String(row.status || '').trim();
     const statusEq = (row, value) => statusText(row) === value;
-    const statusIncludes = (row, value) => statusText(row).includes(value);
-    const missed = callRows.filter((row) => statusEq(row, '부재중'));
-    const failed = callRows.filter((row) => statusEq(row, '실패'));
-    const reserved = callRows.filter((row) => statusEq(row, '예약'));
+    const statusRows = Array.isArray(dailyStatusRows) ? dailyStatusRows : [];
+    const missed = statusRows.filter((row) => statusEq(row, '부재중'));
+    const failed = statusRows.filter((row) => statusEq(row, '실패'));
+    const reserved = statusRows.filter((row) => statusEq(row, '예약'));
     const visitTodayReserved = reserved.filter((row) => toDateKey(row.reservation_at) === reportDate);
-    const visitTodayCompleted = callRows.filter(
-        (row) => statusIncludes(row, '내원완료') && toDateKey(row.reservation_at) === reportDate
+    const visitTodayCompleted = statusRows.filter(
+        (row) => statusEq(row, '내원완료') && toDateKey(row.reservation_at) === reportDate
     );
-    const visitToday = [...visitTodayReserved, ...visitTodayCompleted];
+    const visitTodayMap = new Map();
+    [...visitTodayReserved, ...visitTodayCompleted].forEach((row) => {
+        if (!row?.id) return;
+        if (!visitTodayMap.has(row.id)) visitTodayMap.set(row.id, row);
+    });
+    const visitToday = Array.from(visitTodayMap.values());
     const visitNextdayByCall = reserved.filter((row) => toDateKey(row.reservation_at) === nextDay);
     const visitNextdayMap = new Map();
-    [...visitNextdayByCall, ...(nextdayReservedRows || [])].forEach((row) => {
+    visitNextdayByCall.forEach((row) => {
         if (!row?.id) return;
         if (!visitNextdayMap.has(row.id)) visitNextdayMap.set(row.id, row);
     });
@@ -2161,182 +2174,36 @@ app.post('/tm/reports/close', async (req, res) => {
         return res.status(400).json({ error: 'reportDate must be YYYY-MM-DD' });
     }
 
-    const normalizedTmId = String(targetTmId);
-    const nextDay = nextDateKey(targetDate);
-
     const conn = await pool.getConnection();
     try {
         await ensureReportSchema();
         await conn.beginTransaction();
-
-        const [callRows] = await conn.query(
-            `
-        SELECT
-            l.id,
-            l.\`이름\` AS name,
-            l.\`연락처\` AS phone,
-            l.\`상태\` AS status,
-            COALESCE(l.\`콜횟수\`, 0) AS call_count,
-            l.\`예약_내원일시\` AS reservation_at,
-            m.memo_content AS latest_memo
-        FROM tm_leads l
-            ${latestMemoJoinSql}
-            WHERE l.tm = ?
-              AND DATE(l.\`콜_날짜시간\`) = ?
-            ORDER BY l.id DESC
-            `,
-            [normalizedTmId, targetDate]
-        );
-
-        const [nextdayReservedRows] = await conn.query(
-            `
-        SELECT
-            l.id,
-            l.\`이름\` AS name,
-            l.\`연락처\` AS phone,
-            l.\`상태\` AS status,
-            COALESCE(l.\`콜횟수\`, 0) AS call_count,
-            l.\`예약_내원일시\` AS reservation_at,
-            m.memo_content AS latest_memo
-        FROM tm_leads l
-            ${latestMemoJoinSql}
-            WHERE l.tm = ?
-              AND TRIM(COALESCE(l.\`상태\`, '')) = '예약'
-              AND DATE(l.\`예약_내원일시\`) = ?
-            ORDER BY l.id DESC
-            `,
-            [normalizedTmId, nextDay]
-        );
-
-        const statusText = (row) => String(row.status || '').trim();
-        const statusEq = (row, value) => statusText(row) === value;
-        const statusIncludes = (row, value) => statusText(row).includes(value);
-        const missed = callRows.filter((row) => statusEq(row, '부재중'));
-        const failed = callRows.filter((row) => statusEq(row, '실패'));
-        const reserved = callRows.filter((row) => statusEq(row, '예약'));
-        const visitTodayReserved = reserved.filter((row) => toDateKey(row.reservation_at) === targetDate);
-        const visitTodayCompleted = callRows.filter(
-            (row) => statusIncludes(row, '내원완료') && toDateKey(row.reservation_at) === targetDate
-        );
-        const visitToday = [...visitTodayReserved, ...visitTodayCompleted];
-        const visitNextdayByCall = reserved.filter((row) => toDateKey(row.reservation_at) === nextDay);
-        const visitNextdayMap = new Map();
-        [...visitNextdayByCall, ...(nextdayReservedRows || [])].forEach((row) => {
-            if (!row?.id) return;
-            if (!visitNextdayMap.has(row.id)) visitNextdayMap.set(row.id, row);
-        });
-        const visitNextday = Array.from(visitNextdayMap.values());
-        const totalCallCount = callRows.reduce((sum, row) => {
-            const n = Number(row.call_count);
-            return sum + (Number.isNaN(n) ? 0 : Math.max(0, Math.floor(n)));
-        }, 0);
-
+        const summary = await getDailySummaryRows(conn, targetTmId, targetDate);
+        const upsert = await upsertReportBase(conn, targetTmId, targetDate, summary);
         await conn.query(
             `
-            INSERT INTO tm_daily_report (
-                tm_id,
-                report_date,
-                total_call_count,
-                missed_count,
-                failed_count,
-                reserved_count,
-                visit_today_count,
-                visit_nextday_count,
-                submitted_at,
-                created_at,
-                updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ${KST_NOW_SQL}, ${KST_NOW_SQL}, ${KST_NOW_SQL})
-            ON DUPLICATE KEY UPDATE
-                total_call_count = VALUES(total_call_count),
-                missed_count = VALUES(missed_count),
-                failed_count = VALUES(failed_count),
-                reserved_count = VALUES(reserved_count),
-                visit_today_count = VALUES(visit_today_count),
-                visit_nextday_count = VALUES(visit_nextday_count),
-                submitted_at = ${KST_NOW_SQL},
+            UPDATE tm_daily_report
+            SET submitted_at = ${KST_NOW_SQL},
                 updated_at = ${KST_NOW_SQL}
+            WHERE id = ?
             `,
-            [
-                normalizedTmId,
-                targetDate,
-                totalCallCount,
-                missed.length,
-                failed.length,
-                reserved.length,
-                visitToday.length,
-                visitNextday.length
-            ]
+            [upsert.reportId]
         );
-
-        const [reportRows] = await conn.query(
-            'SELECT id FROM tm_daily_report WHERE tm_id = ? AND report_date = ? LIMIT 1',
-            [normalizedTmId, targetDate]
-        );
-        const reportId = reportRows[0]?.id;
-
-        if (!reportId) {
-            throw new Error('Failed to load report id after upsert');
-        }
-
-        await conn.query('DELETE FROM tm_daily_report_leads WHERE report_id = ?', [reportId]);
-
-        const pushDetail = (metricType, rows, bucket) => {
-            rows.forEach((row) => {
-                bucket.push([
-                    reportId,
-                    metricType,
-                    row.id,
-                    row.name || null,
-                    row.phone || null,
-                    row.status || null,
-                    row.reservation_at || null,
-                    row.latest_memo || null,
-                ]);
-            });
-        };
-
-        const detailValues = [];
-        pushDetail('MISSED', missed, detailValues);
-        pushDetail('FAILED', failed, detailValues);
-        pushDetail('RESERVED', reserved, detailValues);
-        pushDetail('VISIT_TODAY', visitToday, detailValues);
-        pushDetail('VISIT_NEXTDAY', visitNextday, detailValues);
-
-        if (detailValues.length > 0) {
-            await conn.query(
-                `
-                INSERT INTO tm_daily_report_leads (
-                    report_id,
-                    metric_type,
-                    lead_id,
-                    name_snapshot,
-                    phone_snapshot,
-                    status_snapshot,
-                    reservation_at_snapshot,
-                    memo_snapshot
-                ) VALUES ?
-                `,
-                [detailValues]
-            );
-            await conn.query(
-                `UPDATE tm_daily_report_leads SET created_at = ${KST_NOW_SQL} WHERE report_id = ?`,
-                [reportId]
-            );
-        }
+        await replaceReportLeads(conn, upsert.reportId, summary);
 
         await conn.commit();
 
         return res.json({
             ok: true,
-            reportId,
+            reportId: upsert.reportId,
             reportDate: targetDate,
             summary: {
-                totalCallCount,
-                missedCount: missed.length,
-                failedCount: failed.length,
-                reservedCount: reserved.length,
-                visitTodayCount: visitToday.length,
-                visitNextdayCount: visitNextday.length,
+                totalCallCount: upsert.totalCallCount,
+                missedCount: upsert.missedCount,
+                failedCount: upsert.failedCount,
+                reservedCount: upsert.reservedCount,
+                visitTodayCount: upsert.visitTodayCount,
+                visitNextdayCount: upsert.visitNextdayCount,
             },
         });
     } catch (err) {
