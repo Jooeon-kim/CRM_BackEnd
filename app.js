@@ -833,8 +833,8 @@ const writeActivityLog = async (req, actorRole, action, targetType, targetId, be
         await ensureActivityLogSchema();
         const actorTmId = getSessionTmId(req);
         if (!actorTmId && String(actorRole) !== 'SYSTEM') return;
-        const colNames = ['actor_tm_id', 'actor_role', 'action', 'target_type', 'target_id', 'before_json', 'after_json', 'ip_address', 'user_agent'];
-        const values = ['?', '?', '?', '?', '?', '?', '?', '?', '?'];
+        const colNames = ['actor_tm_id', 'actor_role', 'action', 'target_type', 'target_id', 'before_json', 'after_json', 'ip_address', 'user_agent', 'created_at'];
+        const values = ['?', '?', '?', '?', '?', '?', '?', '?', '?', KST_NOW_SQL];
         const params = [
             actorTmId,
             String(actorRole || 'SYSTEM'),
