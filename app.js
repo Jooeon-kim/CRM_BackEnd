@@ -496,6 +496,37 @@ const getSessionTmId = (req) => {
     return Number.isInteger(tmId) && tmId > 0 ? tmId : null;
 };
 
+const getActiveTmIdsFromSessions = async () => {
+    if (!redisClient || typeof redisClient.scan !== 'function' || typeof redisClient.get !== 'function') {
+        return new Set();
+    }
+    const activeTmIds = new Set();
+    let cursor = '0';
+    do {
+        const scanned = await redisClient.scan(cursor, {
+            MATCH: 'crm:sess:*',
+            COUNT: 200,
+        });
+        cursor = scanned?.cursor || '0';
+        const keys = Array.isArray(scanned?.keys) ? scanned.keys : [];
+        if (keys.length === 0) continue;
+        const values = await redisClient.mGet(keys);
+        (values || []).forEach((raw) => {
+            if (!raw) return;
+            try {
+                const parsed = JSON.parse(raw);
+                const tmId = Number(parsed?.user?.id || 0);
+                if (Number.isInteger(tmId) && tmId > 0) {
+                    activeTmIds.add(tmId);
+                }
+            } catch (_) {
+                // ignore malformed session entries
+            }
+        });
+    } while (cursor !== '0');
+    return activeTmIds;
+};
+
 const requireAdminApi = async (req, res) => {
     const sessionTmId = getSessionTmId(req);
     if (!sessionTmId) {
@@ -1087,7 +1118,13 @@ app.get('/tm/assign/summary', async (req, res) => {
 app.get('/tm/agents', async (req, res) => {
     try {
         const [rows] = await pool.query('SELECT id, name, phone, last_login_at, isAdmin FROM tm ORDER BY name');
-        res.json(rows);
+        const activeTmIds = await getActiveTmIdsFromSessions();
+        res.json(
+            (rows || []).map((row) => ({
+                ...row,
+                is_logged_in: activeTmIds.has(Number(row.id)),
+            }))
+        );
     } catch (err) {
         console.error(err);
         res.status(500).json({ error: 'DB query failed' });
