@@ -76,7 +76,7 @@ const sessionMiddleware = session({
         httpOnly: true,
         sameSite: cookieSameSite,
         secure: cookieSecure,
-        maxAge: 1000 * 60 * 60 * 4
+        maxAge: 1000 * 60 * 60
     }
 });
 app.use(sessionMiddleware);
